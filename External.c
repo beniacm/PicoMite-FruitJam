@@ -486,6 +486,9 @@ void __not_in_flash_func(on_pwm_wrap_1)(void)
 void SoftReset(int code)
 {
     _excep_code = code;
+#if defined(ADAFRUIT_FRUIT_JAM)
+    watchdog_hw->scratch[1] = code;
+#endif
 #ifdef USBKEYBOARD
     USBenabled = false;
     uSec(50000); // wait for outstanding requests to complete

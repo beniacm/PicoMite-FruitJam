@@ -1904,10 +1904,17 @@ void tuh_hid_mount_cb(uint8_t dev_addr, uint8_t instance, uint8_t const *desc_re
 		HID[slot].report_requested = false;
 		if (!CurrentLinePtr)
 		{
-			MMPrintString((char *)KBrdList[(int)Option.USBKeyboard]);
-			MMPrintString(" USB Keyboard Connected on channel ");
-			PInt(slot + 1);
-			MMPrintString("\r\n> ");
+#if defined(ADAFRUIT_FRUIT_JAM)
+			// Suppress message during re-enumeration after flash save
+			extern volatile bool pio_usb_reconnecting;
+			if (!pio_usb_reconnecting)
+#endif
+			{
+				MMPrintString((char *)KBrdList[(int)Option.USBKeyboard]);
+				MMPrintString(" USB Keyboard Connected on channel ");
+				PInt(slot + 1);
+				MMPrintString("\r\n> ");
+			}
 		}
 		//		tuh_hid_set_report(HID[slot].Device_address, HID[slot].Device_instance, 0, HID_REPORT_TYPE_OUTPUT, (void *)&HID[n].sendlights,1);
 		Current_USB_devices++;

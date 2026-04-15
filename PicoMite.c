@@ -64,6 +64,9 @@ extern "C"
 #include "tusb.h"
 #include "host/hcd.h"
 #include "usb_host_files/tusb_config.h"
+#if defined(ADAFRUIT_FRUIT_JAM)
+#include "pio_usb_configuration.h"
+#endif
 #else
 #include "pico/unique_id.h"
 #include "class/cdc/cdc_device.h"
@@ -101,6 +104,12 @@ uint8_t PSRAMpin;
 #include "hardware/irq.h"
 #include "hardware/pio.h"
 #include "hardware/pio_instructions.h"
+
+#if defined(ADAFRUIT_FRUIT_JAM)
+// TLV320DAC3100 codec init (tlv320_init, tlv320_enable_outputs) lives in Custom.c
+extern void tlv320_init(void);
+extern void tlv320_enable_outputs(void);
+#endif
 #ifdef PICOMITEWEB
 #include "lwipopts.h"
 #include "pico/cyw43_arch.h"
@@ -198,6 +207,9 @@ uint8_t PSRAMpin;
     int busfault = 0;
     int ExitMMBasicFlag = false;
     volatile int MMAbort = false;
+#if defined(ADAFRUIT_FRUIT_JAM)
+    volatile bool pio_usb_reconnecting = false;
+#endif
     unsigned int _excep_peek;
     void CheckAbort(void);
     void TryLoadProgram(void);
@@ -4848,7 +4860,11 @@ int __not_in_flash_func(MMInkey)(void)
         for (int i = 12; i <= 19; ++i)
         {
             gpio_set_function(i, 0); // HSTX
+#if defined(ADAFRUIT_FRUIT_JAM)
+            gpio_set_drive_strength(i, GPIO_DRIVE_STRENGTH_4MA);
+#else
             gpio_set_drive_strength(i, GPIO_DRIVE_STRENGTH_8MA);
+#endif
             gpio_set_slew_rate(i, GPIO_SLEW_RATE_FAST);
             gpio_set_input_enabled(i, false);
             gpio_set_pulls(i, false, false);
@@ -5299,6 +5315,19 @@ uint32_t testPSRAM(void)
 
     int MIPS16 main()
     {
+#if defined(ADAFRUIT_FRUIT_JAM)
+        // RP2350B: .bss may not be properly zeroed after watchdog reset
+        MMAbort = false;
+        ConsoleRxBufHead = 0;
+        ConsoleRxBufTail = 0;
+        // Hard-reset PIO1 (used by PIO-USB)
+        pio_clear_instruction_memory(pio1);
+        for (int sm = 0; sm < 4; sm++) {
+            pio_sm_set_enabled(pio1, sm, false);
+            pio_sm_clear_fifos(pio1, sm);
+            pio_sm_restart(pio1, sm);
+        }
+#endif
         static int ErrorInPrompt;
         int i = 0;
         char savewatchdog = false;
@@ -5316,6 +5345,25 @@ uint32_t testPSRAM(void)
         if ((_excep_code == POSSIBLE_WATCHDOG) & i)
             restart_reason = 0xFFFFFFFD;
         LoadOptions();
+#if defined(ADAFRUIT_FRUIT_JAM)
+        // Restore _excep_code from watchdog scratch - __uninitialized_ram doesn't survive RP2350B resets
+        // scratch[0] = RESET_CLOCKSPEED (set during clock init)
+        // scratch[1] = SoftReset code (SOFT_RESET, RESET_FLASHSTORAGE, etc.)
+        if (watchdog_hw->scratch[1] >= 9988 && watchdog_hw->scratch[1] <= 9998) {
+            _excep_code = watchdog_hw->scratch[1];
+            watchdog_hw->scratch[1] = 0;
+        } else if (watchdog_hw->scratch[0] >= 9988 && watchdog_hw->scratch[0] <= 9998) {
+            _excep_code = watchdog_hw->scratch[0];
+            watchdog_hw->scratch[0] = 0;
+        }
+        // Fruit Jam has no UART adapter - disable serial console to prevent noise
+        if (Option.SerialConsole) {
+            Option.SerialConsole = 0;
+            Option.SerialTX = 0;
+            Option.SerialRX = 0;
+            SaveOptions();
+        }
+#endif
 #ifdef rp2350
         if (rom_get_last_boot_type() == BOOT_TYPE_FLASH_UPDATE)
             restart_reason = 0xFFFFFFFC;
@@ -5374,6 +5422,9 @@ uint32_t testPSRAM(void)
         else
         {
             _excep_code = RESET_CLOCKSPEED;
+#if defined(ADAFRUIT_FRUIT_JAM)
+            watchdog_hw->scratch[0] = RESET_CLOCKSPEED;
+#endif
             watchdog_enable(1000, 1);
         }
 #ifdef rp2350
@@ -5400,6 +5451,7 @@ uint32_t testPSRAM(void)
 #endif
         sleep_ms(10);
 #ifdef rp2350
+#if !defined(ADAFRUIT_FRUIT_JAM)
         pads_qspi_hw->io[0] = 0x67;
         pads_qspi_hw->io[1] = 0x67;
         pads_qspi_hw->io[2] = 0x67;
@@ -5410,6 +5462,12 @@ uint32_t testPSRAM(void)
             qmi_hw->m[0].timing = 0x40006202; // COOLDOWN=1, RXDELAY=2, MIN_DESELECT=6, CLKDIV=2
         else
             qmi_hw->m[0].timing = 0x40006204; // COOLDOWN=1, RXDELAY=2, MIN_DESELECT=6, CLKDIV=4
+#else
+        // Fruit Jam: use CLKDIV=3 like fruitjam-doom, with hw_write_masked for safety
+        hw_write_masked(&qmi_hw->m[0].timing,
+            (3u << QMI_M0_TIMING_CLKDIV_LSB) | (2u << QMI_M0_TIMING_RXDELAY_LSB),
+            QMI_M0_TIMING_CLKDIV_BITS | QMI_M0_TIMING_RXDELAY_BITS);
+#endif
         sleep_ms(2);
 #endif
 #if defined(HDMI) && defined(rp2350)
@@ -5419,6 +5477,7 @@ uint32_t testPSRAM(void)
 #endif
 // NB: set_sys_clock can change the pad configuration so we need to redo it
 #ifdef rp2350
+#if !defined(ADAFRUIT_FRUIT_JAM)
         pads_qspi_hw->io[0] = 0x67;
         pads_qspi_hw->io[1] = 0x67;
         pads_qspi_hw->io[2] = 0x67;
@@ -5429,6 +5488,11 @@ uint32_t testPSRAM(void)
             qmi_hw->m[0].timing = 0x40006202; // COOLDOWN=1, RXDELAY=2, MIN_DESELECT=6, CLKDIV=2
         else
             qmi_hw->m[0].timing = 0x40006204; // COOLDOWN=1, RXDELAY=2, MIN_DESELECT=6, CLKDIV=4
+#else
+        hw_write_masked(&qmi_hw->m[0].timing,
+            (3u << QMI_M0_TIMING_CLKDIV_LSB) | (2u << QMI_M0_TIMING_RXDELAY_LSB),
+            QMI_M0_TIMING_CLKDIV_BITS | QMI_M0_TIMING_RXDELAY_BITS);
+#endif
         sleep_ms(2);
 #endif
         PWM_FREQ = 44100;
@@ -5493,6 +5557,15 @@ uint32_t testPSRAM(void)
 #ifdef HDMI
     if ((FullColour || MediumRes) && !(Option.CPU_Speed == FreqX))
     {
+#if defined(ADAFRUIT_FRUIT_JAM)
+        // Match fruitjam-doom: use CLK_SYS as HSTX source, target ~126MHz for 480p
+        clock_configure(
+            clk_hstx,
+            0,
+            CLOCKS_CLK_HSTX_CTRL_AUXSRC_VALUE_CLK_SYS,
+            clock_get_hz(clk_sys),
+            125875000);
+#else
         clock_configure(
             clk_hstx,
             0,                                                            // No glitchless mux
@@ -5500,6 +5573,7 @@ uint32_t testPSRAM(void)
             Option.CPU_Speed * 1000,                                      // Input frequency
             Option.CPU_Speed * (Option.CPU_Speed == Freq378P ? 332 : 500) // Output (must be same as no divider)
         );
+#endif
     }
     if (Option.CPU_Speed == FreqSVGA)
     { // adjust the size of the heap
@@ -5660,7 +5734,9 @@ uint32_t testPSRAM(void)
 #ifdef PICOMITEVGA
         //        bus_ctrl_hw->priority = BUSCTRL_BUS_PRIORITY_DMA_W_BITS | BUSCTRL_BUS_PRIORITY_DMA_R_BITS;
 #ifdef HDMI
-        //    bus_ctrl_hw->priority = BUSCTRL_BUS_PRIORITY_DMA_W_BITS | BUSCTRL_BUS_PRIORITY_DMA_R_BITS | BUSCTRL_BUS_PRIORITY_PROC1_BITS;
+#if defined(ADAFRUIT_FRUIT_JAM)
+        bus_ctrl_hw->priority = BUSCTRL_BUS_PRIORITY_DMA_W_BITS | BUSCTRL_BUS_PRIORITY_DMA_R_BITS;
+#endif
         multicore_launch_core1_with_stack(HDMICore, core1stack, 512);
         core1stack[0] = 0x12345678;
         uSec(1000);
@@ -5815,10 +5891,34 @@ uint32_t testPSRAM(void)
             HID[i].report_requested = true;
         }
         //    USB_bus_reset();
+#if defined(ADAFRUIT_FRUIT_JAM)
+        // Fruit Jam: configure PIO-USB on GPIO 1 (D+) / GPIO 2 (D-)
+        // Use PIO1 to avoid conflict with PicoMite's PIO0 (QVGA_PIO_NUM)
+        {
+            pio_usb_configuration_t pio_cfg = PIO_USB_DEFAULT_CONFIG;
+            pio_cfg.pio_tx_num = 1;  // Use PIO1 for TX
+            pio_cfg.pio_rx_num = 1;  // Use PIO1 for RX
+            pio_cfg.pin_dp = 1;  // ADAFRUIT_FRUIT_JAM_USB_HOST_DATA_PLUS_PIN
+            pio_cfg.pinout = PIO_USB_PINOUT_DPDM;
+            pio_cfg.tx_ch = 9;
+            // Enable VBUS power for USB host port
+            gpio_init(11);  // ADAFRUIT_FRUIT_JAM_USB_HOST_5V_POWER_PIN
+            gpio_set_dir(11, true);
+            gpio_put(11, 1);
+            tuh_configure(BOARD_TUH_RHPORT, TUH_CFGID_RPI_PIO_USB_CONFIGURATION, &pio_cfg);
+            tuh_init(BOARD_TUH_RHPORT);
+            // Reserve PIO-USB pins so PicoMite's pin reset doesn't reconfigure them
+            // GPIO 1 (D+) = PINMAP[1] = pin 2, GPIO 2 (D-) = PINMAP[2] = pin 4, GPIO 11 (VBUS) = PINMAP[11] = pin 15
+            ExtCurrentConfig[PINMAP[1]] = EXT_BOOT_RESERVED;
+            ExtCurrentConfig[PINMAP[2]] = EXT_BOOT_RESERVED;
+            ExtCurrentConfig[PINMAP[11]] = EXT_BOOT_RESERVED;
+        }
+#else
         hcd_port_reset(BOARD_TUH_RHPORT);
         uSec(10000); // wait for any hub to power up
         hcd_port_reset_end(BOARD_TUH_RHPORT);
         tuh_init(BOARD_TUH_RHPORT);
+#endif
         USBenabled = true;
 #else
     initMouse0(0);
@@ -5833,7 +5933,19 @@ uint32_t testPSRAM(void)
 #if defined(PICOMITEVGA) && !defined(HDMI)
         start_i2s(QVGA_PIO_NUM, 1);
 #else
+#if defined(ADAFRUIT_FRUIT_JAM)
+        // Init codec BEFORE I2S - generates MCLK on GP25, codec PLL locks from MCLK
+        if (Option.audio_i2s_bclk)
+            tlv320_init();
+#endif
         start_i2s(2, 1);
+#if defined(ADAFRUIT_FRUIT_JAM)
+        // Enable outputs AFTER I2S starts
+        if (Option.audio_i2s_bclk) {
+            sleep_ms(50);
+            tlv320_enable_outputs();
+        }
+#endif
 #endif
 #else
     start_i2s(QVGA_PIO_NUM, 1);
@@ -6061,6 +6173,11 @@ uint32_t testPSRAM(void)
 #endif
         clearrepeat();
         memcpy(buf, tknbuf, STRINGSIZE); // save the token buffer because we are going to use it
+#if defined(ADAFRUIT_FRUIT_JAM)
+        // Stop PIO-USB before flash ops (SOF timer can't run with interrupts off)
+        // Must be called BEFORE FlashWriteInit which disables interrupts
+        if (USBenabled) { pio_usb_reconnecting = true; extern void pio_usb_host_stop(void); pio_usb_host_stop(); }
+#endif
         FlashWriteInit(PROGRAM_FLASH);
         safe_flash_range_erase(realflashpointer, MAX_PROG_SIZE);
         j = MAX_PROG_SIZE / 4;
@@ -6436,6 +6553,10 @@ uint32_t testPSRAM(void)
                                          //    initConsole();
         clearrepeat();
         enable_interrupts_pico();
+#if defined(ADAFRUIT_FRUIT_JAM)
+        // Restart PIO-USB after flash ops - keyboard will re-enumerate
+        if (USBenabled) { extern void pio_usb_host_restart(void); pio_usb_host_restart(); pio_usb_reconnecting = false; }
+#endif
         return;
 
     // we only get here in an error situation while writing the program to flash

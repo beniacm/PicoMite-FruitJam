@@ -33,6 +33,9 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
  */
 #include "MMBasic_Includes.h"
 #include "Hardware_Includes.h"
+#if defined(ADAFRUIT_FRUIT_JAM)
+#include "pico/multicore.h"
+#endif
 #include "ff.h"
 #include "diskio.h"
 #include "pico/stdlib.h"
@@ -6393,24 +6396,47 @@ void ResetOptions(bool startup)
     Option.CPU_Speed = Freq252P;
 #ifdef USBKEYBOARD
 #ifdef HDMI
+#if defined(ADAFRUIT_FRUIT_JAM)
+    // Fruit Jam HSTX: CKP=GPIO13(bit1), D0P=GPIO15(bit3), D1P=GPIO17(bit5), D2P=GPIO19(bit7)
+    Option.HDMIclock = 1;
+    Option.HDMId0 = 3;
+    Option.HDMId1 = 5;
+    Option.HDMId2 = 7;
+    Option.CPU_Speed = Freq252P; // 252MHz -> clk_hstx=126MHz -> 252Mbps TMDS for 480p
+#else
     Option.HDMIclock = 2;
     Option.HDMId0 = 0;
     Option.HDMId1 = 6;
     Option.HDMId2 = 4;
 #endif
+#endif
     Option.USBKeyboard = CONFIG_US;
+#if defined(ADAFRUIT_FRUIT_JAM)
+    // No serial console on Fruit Jam - UART RX floats without adapter
+    Option.SerialConsole = 0;
+    Option.SerialTX = 0;
+    Option.SerialRX = 0;
+#else
     Option.SerialConsole = 2;
     Option.SerialTX = 11;
     Option.SerialRX = 12;
+#endif
     Option.capslock = 0;
     Option.numlock = 1;
     Option.ColourCode = 1;
 #else
 #ifdef HDMI
+#if defined(ADAFRUIT_FRUIT_JAM)
+    Option.HDMIclock = 1;
+    Option.HDMId0 = 3;
+    Option.HDMId1 = 5;
+    Option.HDMId2 = 7;
+#else
     Option.HDMIclock = 2;
     Option.HDMId0 = 0;
     Option.HDMId1 = 6;
     Option.HDMId2 = 4;
+#endif
 #else
     Option.VGA_HSYNC = 21;
     Option.VGA_BLUE = 24;

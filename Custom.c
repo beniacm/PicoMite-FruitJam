@@ -532,6 +532,134 @@ extern uint I2SOff;
 extern void start_vga_i2s(void);
 extern void start_i2s(int pio, int sm);
 
+#if defined(ADAFRUIT_FRUIT_JAM)
+#include "hardware/i2c.h"
+
+#define TLV320_I2C_ADDR  0x18
+#define TLV320_I2C       i2c0
+#define TLV320_SDA_PIN   20
+#define TLV320_SCL_PIN   21
+#define TLV320_RESET_PIN 22
+#define TLV320_MCLK_PIN  25
+
+static void tlv320_write(uint8_t reg, uint8_t val) {
+    uint8_t buf[2] = { reg, val };
+    i2c_write_timeout_us(TLV320_I2C, TLV320_I2C_ADDR, buf, 2, false, 10000);
+}
+
+static uint8_t tlv320_read(uint8_t reg) {
+    uint8_t buf[1] = { reg };
+    i2c_write_timeout_us(TLV320_I2C, TLV320_I2C_ADDR, buf, 1, true, 10000);
+    i2c_read_timeout_us(TLV320_I2C, TLV320_I2C_ADDR, buf, 1, false, 10000);
+    return buf[0];
+}
+
+static void tlv320_modify(uint8_t reg, uint8_t mask, uint8_t val) {
+    uint8_t cur = tlv320_read(reg);
+    tlv320_write(reg, (cur & ~mask) | (val & mask));
+}
+
+static void tlv320_setpage(uint8_t page) {
+    tlv320_write(0x00, page);
+}
+
+// Generate 15 MHz MCLK on GP25 via PWM, hardware-reset codec, configure PLL for 44100 Hz
+void tlv320_init(void) {
+    // --- Generate ~15 MHz MCLK on GP25 using PWM ---
+    gpio_set_function(TLV320_MCLK_PIN, GPIO_FUNC_PWM);
+    uint slice = pwm_gpio_to_slice_num(TLV320_MCLK_PIN);
+    // 150 MHz sys_clk / (10 * 1) = 15 MHz
+    pwm_set_clkdiv_int_frac(slice, 1, 0);   // divider = 1.0
+    pwm_set_wrap(slice, 9);                  // period = 10 cycles
+    pwm_set_chan_level(slice, PWM_CHAN_B, 5); // 50% duty
+    pwm_set_enabled(slice, true);
+
+    // --- Hardware reset the codec ---
+    gpio_init(TLV320_RESET_PIN);
+    gpio_set_dir(TLV320_RESET_PIN, true);
+    gpio_put(TLV320_RESET_PIN, false);
+    sleep_ms(10);
+    gpio_put(TLV320_RESET_PIN, true);
+    sleep_ms(10);
+
+    // --- Init I2C for codec control ---
+    i2c_init(TLV320_I2C, 100000);
+    gpio_set_function(TLV320_SDA_PIN, GPIO_FUNC_I2C);
+    gpio_set_function(TLV320_SCL_PIN, GPIO_FUNC_I2C);
+    sleep_ms(50);
+
+    // Software reset
+    tlv320_write(0x01, 0x01);
+    sleep_ms(10);
+
+    // --- PLL configuration: MCLK (15 MHz) -> 44100 Hz audio ---
+    // Codec clock source = MCLK
+    tlv320_modify(0x04, 0x03, 0x00);   // CODEC_CLKIN = MCLK
+    tlv320_modify(0x04, 0x0C, 0x04);   // PLL_CLKIN = MCLK
+
+    // PLL: J=5, D=6448  => PLL out = MCLK * R * J.D / P
+    // With P=1, R=2, J=5, D=6448: 15e6 * 2 * 5.6448 / 1 = 169.344 MHz
+    tlv320_modify(0x05, 0x70, 0x10);   // P = 1
+    tlv320_modify(0x05, 0x0F, 0x02);   // R = 2
+    tlv320_write(0x06, 5);             // J = 5
+    tlv320_write(0x07, (6448 >> 8) & 0x3F); // D MSB
+    tlv320_write(0x08, 6448 & 0xFF);        // D LSB
+
+    // DAC dividers: NDAC=3, MDAC=8  => DAC_CLK = 169.344e6 / 3 / 8 = 7.056 MHz
+    // DOSR = 160 => fs = 7.056e6 / 160 = 44100 Hz
+    tlv320_modify(0x0B, 0x7F, 3);      // NDAC = 3
+    tlv320_modify(0x0B, 0x80, 0x80);   // NDAC power on
+    tlv320_modify(0x0C, 0x7F, 8);      // MDAC = 8
+    tlv320_modify(0x0C, 0x80, 0x80);   // MDAC power on
+
+    // ADC dividers: NADC=3, MADC=8
+    tlv320_modify(0x12, 0x7F, 3);      // NADC = 3
+    tlv320_modify(0x12, 0x80, 0x80);   // NADC power on
+    tlv320_modify(0x13, 0x7F, 8);      // MADC = 8
+    tlv320_modify(0x13, 0x80, 0x80);   // MADC power on
+
+    // Power up PLL
+    tlv320_modify(0x05, 0x80, 0x80);
+
+    // I2S interface: 16-bit, I2S mode
+    tlv320_modify(0x1B, 0xC0, 0x00);   // I2S mode
+    tlv320_modify(0x1B, 0x30, 0x00);   // 16-bit
+
+    // DAC power up - both channels
+    tlv320_modify(0x3F, 0xC0, 0xC0);
+
+    // DAC routing (page 1)
+    tlv320_setpage(1);
+    tlv320_modify(0x23, 0xC0, 0x40);   // DAC_L -> mixer amp L
+    tlv320_modify(0x23, 0x0C, 0x04);   // DAC_R -> mixer amp R
+
+    // DAC volume (page 0)
+    tlv320_setpage(0);
+    tlv320_modify(0x40, 0x0C, 0x00);   // DAC not muted
+    tlv320_write(0x41, 0x00);           // Left DAC volume = 0 dB
+    tlv320_write(0x42, 0x00);           // Right DAC volume = 0 dB
+}
+
+// Configure headphone + speaker output drivers and unmute
+void tlv320_enable_outputs(void) {
+    // Headphone driver (page 1)
+    tlv320_setpage(1);
+    tlv320_modify(0x1F, 0xC0, 0xC0);   // Power up HPL, HPR
+    tlv320_modify(0x28, 0x04, 0x04);    // Unmute HPL
+    tlv320_modify(0x29, 0x04, 0x04);    // Unmute HPR
+    tlv320_write(0x24, 0x00);           // HPL analog volume = 0 dB
+    tlv320_write(0x25, 0x00);           // HPR analog volume = 0 dB
+
+    // Speaker amp
+    tlv320_modify(0x20, 0x80, 0x80);    // Power up SPK
+    tlv320_modify(0x2A, 0x04, 0x04);    // Unmute SPK
+    tlv320_write(0x26, 0x00);           // SPK analog volume = 0 dB
+
+    // Return to page 0
+    tlv320_setpage(0);
+}
+#endif /* ADAFRUIT_FRUIT_JAM */
+
 void start_i2s(int pior, int sm)
 {
         if (!Option.audio_i2s_bclk)

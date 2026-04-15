@@ -38,7 +38,11 @@
 // Board Specific Configuration
 //--------------------------------------------------------------------+
 
-#if CFG_TUSB_MCU == OPT_MCU_RP2040
+#if defined(ADAFRUIT_FRUIT_JAM)
+// Fruit Jam uses PIO-USB for host keyboard on GPIO 1/2
+#define CFG_TUH_RPI_PIO_USB   1
+#define BOARD_TUH_RHPORT      1
+#elif CFG_TUSB_MCU == OPT_MCU_RP2040
 // change to 1 if using pico-pio-usb as host controller for raspberry rp2040
 #define CFG_TUH_RPI_PIO_USB   0
 #define BOARD_TUH_RHPORT      CFG_TUH_RPI_PIO_USB

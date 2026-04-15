@@ -63,7 +63,9 @@ unsigned char com2_bit9 = 0; // used to track the 9th bit
 // variables for USB CDC host ports (COM3-COM6)
 #ifdef USBKEYBOARD
 #include "tusb.h"
+#include "usb_host_files/tusb_config.h"
 
+#if CFG_TUH_CDC > 0
 int com3 = 0;						   // true if COM3 (CDC idx 0) is enabled
 int com3_buf_size;					   // size of the buffer used to receive chars
 char *com3_interrupt;				   // pointer to the interrupt routine
@@ -224,6 +226,7 @@ void tuh_cdc_tx_complete_cb(uint8_t idx)
 {
 	// TX complete - nothing special needed, writes are synchronous from BASIC's perspective
 }
+#endif // CFG_TUH_CDC > 0
 #endif // USBKEYBOARD
 // uart interrupt handler
 void on_uart_irq0()
@@ -607,7 +610,7 @@ void MIPS16 SerialOpen(unsigned char *spec)
 		com2Rx_head = com2Rx_tail = 0;
 		com2Tx_head = com2Tx_tail = 0;
 	}
-#ifdef USBKEYBOARD
+#if defined(USBKEYBOARD) && CFG_TUH_CDC > 0
 	else if (spec[3] >= '3' && spec[3] <= '6')
 	{
 		///////////////////////////////// this is COM3-COM6 (USB CDC host) ////////////////////////////////////
@@ -640,7 +643,7 @@ void MIPS16 SerialOpen(unsigned char *spec)
 		// Assert DTR (and RTS) to signal the device we are ready
 		tuh_cdc_set_control_line_state(cdc_idx, CDC_CONTROL_LINE_STATE_DTR | CDC_CONTROL_LINE_STATE_RTS, NULL, 0);
 	}
-#endif // USBKEYBOARD
+#endif // USBKEYBOARD && CFG_TUH_CDC
 }
 
 /***************************************************************************************************
@@ -690,7 +693,7 @@ void MIPS16 SerialClose(int comnbr)
 			com2Tx_buf = NULL;
 		}
 	}
-#ifdef USBKEYBOARD
+#if defined(USBKEYBOARD) && CFG_TUH_CDC > 0
 	else if (comnbr >= 3 && comnbr <= 6)
 	{
 		int cdc_idx = comnbr - 3;
@@ -708,7 +711,7 @@ void MIPS16 SerialClose(int comnbr)
 			}
 		}
 	}
-#endif // USBKEYBOARD
+#endif // USBKEYBOARD && CFG_TUH_CDC
 }
 
 /***************************************************************************************************
@@ -750,7 +753,7 @@ unsigned char SerialPutchar(int comnbr, unsigned char c)
 			irq_set_pending(UART1_IRQ);
 		}
 	}
-#ifdef USBKEYBOARD
+#if defined(USBKEYBOARD) && CFG_TUH_CDC > 0
 	else if (comnbr >= 3 && comnbr <= 6)
 	{
 		int idx = comnbr - 3;
@@ -767,7 +770,7 @@ unsigned char SerialPutchar(int comnbr, unsigned char c)
 			tuh_cdc_write_flush(idx);
 		}
 	}
-#endif // USBKEYBOARD
+#endif // USBKEYBOARD && CFG_TUH_CDC
 	return c;
 }
 
@@ -794,7 +797,7 @@ int SerialRxStatus(int comnbr)
 		if (i < 0)
 			i += com2_buf_size;
 	}
-#ifdef USBKEYBOARD
+#if defined(USBKEYBOARD) && CFG_TUH_CDC > 0
 	else if (comnbr >= 3 && comnbr <= 6)
 	{
 		int idx = comnbr - 3;
@@ -803,7 +806,7 @@ int SerialRxStatus(int comnbr)
 		if (i < 0)
 			i += *cdc_buf_size[idx];
 	}
-#endif // USBKEYBOARD
+#endif
 	return i;
 }
 
@@ -826,13 +829,13 @@ int SerialTxStatus(int comnbr)
 		if (i < 0)
 			i += TX_BUFFER_SIZE;
 	}
-#ifdef USBKEYBOARD
+#if defined(USBKEYBOARD) && CFG_TUH_CDC > 0
 	else if (comnbr >= 3 && comnbr <= 6)
 	{
 		// CDC host TX is written directly via TinyUSB, no local buffer
 		i = 0;
 	}
-#endif // USBKEYBOARD
+#endif
 	return i;
 }
 
@@ -865,7 +868,7 @@ int SerialGetchar(int comnbr)
 		}
 		uart_set_irq_enables(uart1, true, true);
 	}
-#ifdef USBKEYBOARD
+#if defined(USBKEYBOARD) && CFG_TUH_CDC > 0
 	else if (comnbr >= 3 && comnbr <= 6)
 	{
 		int idx = comnbr - 3;
@@ -876,6 +879,6 @@ int SerialGetchar(int comnbr)
 			*cdc_rx_tail[idx] = (*cdc_rx_tail[idx] + 1) % *cdc_buf_size[idx];
 		}
 	}
-#endif // USBKEYBOARD
+#endif
 	return c;
 }

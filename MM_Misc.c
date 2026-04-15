@@ -25,6 +25,9 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 
 #include "MMBasic_Includes.h"
 #include "Hardware_Includes.h"
+#ifdef USBKEYBOARD
+#include "usb_host_files/tusb_config.h"
+#endif
 #include "pico/stdlib.h"
 #include "hardware/clocks.h"
 #include <time.h>
@@ -3578,6 +3581,7 @@ void MIPS16 configure(unsigned char *p, bool noask)
             MMPrintString("OLIMEX USB\r\n");
             MMPrintString("PICO COMPUTER\r\n");
             MMPrintString("HDMIUSBI2S\r\n");
+            MMPrintString("FRUIT JAM\r\n");
 #else
             MMPrintString("OLIMEX\r\n");
             MMPrintString("HDMIBasic\r\n");
@@ -3856,6 +3860,36 @@ void MIPS16 configure(unsigned char *p, bool noask)
             Option.INT2pin = PINMAP[1];
             Option.INT3pin = PINMAP[2];
             Option.INT4pin = PINMAP[3];
+            SaveOptions();
+            printoptions();
+            uSec(100000);
+            doreset(format);
+        }
+        if (checkstring(p, (unsigned char *)"FRUIT JAM"))
+        {
+            format = testMODBUFF(true, 512, false);
+            strcpy((char *)Option.platform, "FRUIT JAM");
+            Option.ColourCode = 1;
+            Option.CPU_Speed = Freq480P;
+            Option.HDMIclock = 1;
+            Option.HDMId0 = 3;
+            Option.HDMId1 = 5;
+            Option.HDMId2 = 7;
+            Option.SD_CS = PINMAP[39];
+            Option.SD_CLK_PIN = PINMAP[34];
+            Option.SD_MOSI_PIN = PINMAP[35];
+            Option.SD_MISO_PIN = PINMAP[36];
+            Option.audio_i2s_bclk = PINMAP[26];
+            Option.audio_i2s_data = PINMAP[24];
+            Option.AUDIO_SLICE = 11;
+            Option.SYSTEM_I2C_SDA = PINMAP[20];
+            Option.SYSTEM_I2C_SCL = PINMAP[21];
+            Option.SerialTX = PINMAP[8];
+            Option.SerialRX = PINMAP[9];
+            Option.SerialConsole = 2;
+            Option.heartbeatpin = PINMAP[29];
+            Option.NoHeartbeat = false;
+            Option.PSRAM_CS_PIN = PINMAP[47];
             SaveOptions();
             printoptions();
             uSec(100000);
@@ -4660,6 +4694,19 @@ void MIPS16 cmd_option(void)
         {
             if (checkstring((unsigned char *)p, (unsigned char *)"GAMEMITE"))
                 strcpy((char *)Option.platform, "Game*Mite");
+#if defined(ADAFRUIT_FRUIT_JAM)
+            else if (checkstring((unsigned char *)p, (unsigned char *)"FRUITJAM"))
+            {
+                strcpy((char *)Option.platform, "FRUITJAM");
+                Option.ColourCode = 1;
+                Option.SerialConsole = 0;
+                Option.SerialTX = 0;
+                Option.SerialRX = 0;
+                SaveOptions();
+                MMPrintString("Options saved. Power cycle the board now.\r\n");
+                while(1) { tight_loop_contents(); }
+            }
+#endif
             else
                 strcpy((char *)Option.platform, p);
         }
@@ -8930,7 +8977,7 @@ int checkdetailinterrupts(void)
         intaddr = com2_interrupt; // set the next stmt to the interrupt location
         goto GotAnInterrupt;
     }
-#ifdef USBKEYBOARD
+#if defined(USBKEYBOARD) && CFG_TUH_CDC > 0
     if (com3_interrupt != NULL && SerialRxStatus(3) >= com3_ilevel)
     {                             // do we need to interrupt?
         intaddr = com3_interrupt; // set the next stmt to the interrupt location

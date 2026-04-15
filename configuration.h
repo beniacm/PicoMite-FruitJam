@@ -48,8 +48,13 @@ extern "C"
 #define MAXVARS (MAXGLOBALVARS + MAXLOCALVARS)
 
 #ifdef HDMI
+#if defined(ADAFRUIT_FRUIT_JAM)
+#define FLASH_TARGET_OFFSET (1024 * 1024)
+#define HEAP_MEMORY_SIZE (160 * 1024)
+#else
 #define FLASH_TARGET_OFFSET (928 * 1024)
 #define HEAP_MEMORY_SIZE (180 * 1024)
+#endif
 #else
 #define FLASH_TARGET_OFFSET (912 * 1024)
 #define HEAP_MEMORY_SIZE (188 * 1024)

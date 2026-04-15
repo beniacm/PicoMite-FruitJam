@@ -173,7 +173,7 @@ extern void MX_USART1_UART_Init1(void);
  * Fixed mapping: COM3 = CDC idx 0 (channel 5), COM4 = CDC idx 1 (channel 6),
  *                COM5 = CDC idx 2 (channel 7), COM6 = CDC idx 3 (channel 8)
  * ============================================================================================================== */
-#ifdef USBKEYBOARD
+#if defined(USBKEYBOARD) && CFG_TUH_CDC > 0
 extern int com3;				  // true if COM3 (CDC host idx 0) is enabled
 extern int com3_buf_size;		  // size of the receive buffer
 extern char *com3_interrupt;	  // pointer to the interrupt routine
