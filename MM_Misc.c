@@ -2946,6 +2946,21 @@ void MIPS16 printoptions(void)
     if (Option.disabletftp == 1)
         PO2Str("TFTP", "OFF");
 #endif
+#if defined(ADAFRUIT_FRUIT_JAM)
+    if (*Option.SSID) {
+        char password[] = "****************************************************************";
+        password[strlen((char *)Option.PASSWORD)] = 0;
+        PO("WIFI");
+        MMPrintString((char *)Option.SSID);
+        MMputchar(',', 1); MMputchar(' ', 1);
+        MMPrintString(password);
+        PRet();
+    }
+    if (Option.Telnet == 1)
+        PO2Str("TELNET", "CONSOLE ON");
+    if (Option.Telnet == -1)
+        PO2Str("TELNET", "CONSOLE ONLY");
+#endif
     if (Option.TOUCH_CS)
     {
         PO("TOUCH");
@@ -4713,6 +4728,39 @@ void MIPS16 cmd_option(void)
         SaveOptions();
         return;
     }
+#if defined(ADAFRUIT_FRUIT_JAM)
+    // OPTION WIFI ssid$, password$
+    tp = checkstring(cmdline, (unsigned char *)"WIFI");
+    if (tp) {
+        if (CurrentLinePtr) StandardError(10);
+        getargs(&tp, 3, (unsigned char *)",");
+        if (argc != 3) error("Syntax: OPTION WIFI ssid$, password$");
+        char *ssid = (char *)getCstring(argv[0]);
+        char *pass = (char *)getCstring(argv[2]);
+        if (strlen(ssid) > MAXKEYLEN - 1) error("SSID too long");
+        if (strlen(pass) > MAXKEYLEN - 1) error("Password too long");
+        strcpy((char *)Option.SSID, ssid);
+        strcpy((char *)Option.PASSWORD, pass);
+        SaveOptions();
+        MMPrintString("WiFi credentials saved. Reboot to connect.\r\n");
+        return;
+    }
+    // OPTION TELNET CONSOLE ON|OFF
+    tp = checkstring(cmdline, (unsigned char *)"TELNET CONSOLE");
+    if (tp) {
+        if (CurrentLinePtr) StandardError(10);
+        if (checkstring(tp, (unsigned char *)"OFF"))
+            Option.Telnet = 0;
+        else if (checkstring(tp, (unsigned char *)"ON"))
+            Option.Telnet = 1;
+        else if (checkstring(tp, (unsigned char *)"ONLY"))
+            Option.Telnet = -1;
+        else SyntaxError();
+        SaveOptions();
+        SoftReset(SOFT_RESET);
+        return;
+    }
+#endif
 #ifdef rp2350
 #ifdef HDMI
     tp = checkstring(cmdline, (unsigned char *)"HDMI PINS");

@@ -1063,4 +1063,243 @@ void cmd_web(void) {
     error("Unknown WEB command");
 }
 
+// ============================================================================
+// Telnet Console Server
+// ============================================================================
+
+static int telnet_server_socket = -1;  // listener socket
+static int telnet_client_socket = -1;  // accepted client socket
+static char telnet_txbuf[256];
+static int telnet_txpos = 0;
+
+// Telnet negotiation: WILL SUPPRESS-GO-AHEAD, DO SUPPRESS-GO-AHEAD, WILL ECHO
+static const uint8_t telnet_init_options[] = {
+    255, 251, 3,   // IAC WILL SGA
+    255, 253, 3,   // IAC DO SGA
+    255, 251, 1,   // IAC WILL ECHO
+    0
+};
+
+bool nina_telnet_start(void) {
+    if (telnet_server_socket >= 0) return true; // already running
+
+    // Get a socket for the listener
+    uint8_t result;
+    nina_param_t resp[1];
+    resp[0].data = &result;
+    resp[0].len = 1;
+    int nresp;
+
+    nina_command(CMD_GET_SOCKET, 0, NULL, resp, 1, &nresp);
+    uint8_t sock = result;
+    if (sock == 255) return false;
+
+    // Start TCP server on port 23
+    uint8_t port_bytes[2] = {0, 23}; // port 23 big-endian
+    uint8_t tcp_mode = 0; // TCP
+    nina_param_t params[3];
+    params[0].data = port_bytes; params[0].len = 2;
+    params[1].data = &sock; params[1].len = 1;
+    params[2].data = &tcp_mode; params[2].len = 1;
+    if (!nina_command(CMD_START_SERVER_TCP, 3, params, resp, 1, &nresp))
+        return false;
+
+    telnet_server_socket = sock;
+    telnet_client_socket = -1;
+    telnet_txpos = 0;
+    return true;
+}
+
+void nina_telnet_stop(void) {
+    if (telnet_client_socket >= 0) {
+        uint8_t sock = telnet_client_socket;
+        uint8_t result;
+        nina_param_t p[1], r[1];
+        p[0].data = &sock; p[0].len = 1;
+        r[0].data = &result; r[0].len = 1;
+        int n;
+        nina_command(CMD_STOP_CLIENT_TCP, 1, p, r, 1, &n);
+        telnet_client_socket = -1;
+    }
+    if (telnet_server_socket >= 0) {
+        uint8_t sock = telnet_server_socket;
+        uint8_t result;
+        nina_param_t p[1], r[1];
+        p[0].data = &sock; p[0].len = 1;
+        r[0].data = &result; r[0].len = 1;
+        int n;
+        nina_command(CMD_STOP_CLIENT_TCP, 1, p, r, 1, &n);
+        telnet_server_socket = -1;
+    }
+}
+
+// Called from routinechecks() - poll for telnet client data
+void nina_telnet_poll(void) {
+    if (telnet_server_socket < 0 || !WIFIconnected) return;
+
+    int nresp;
+    uint8_t result;
+    nina_param_t resp1[1];
+    resp1[0].data = &result; resp1[0].len = 1;
+
+    // Accept new client if none connected
+    if (telnet_client_socket < 0) {
+        // AVAIL_DATA_TCP with 2 params = server accept query
+        // Returns client socket index (0-3) or 255 (no client)
+        uint8_t srv_sock = telnet_server_socket;
+        uint8_t accept_flag = 0; // non-blocking
+        nina_param_t ap[2], ar[1];
+        ap[0].data = &srv_sock; ap[0].len = 1;
+        ap[1].data = &accept_flag; ap[1].len = 1;
+        uint8_t client_sock_buf[2] = {255, 0};
+        ar[0].data = client_sock_buf; ar[0].len = 2;
+        if (!nina_command(CMD_AVAIL_DATA_TCP, 2, ap, ar, 1, &nresp))
+            return;
+
+        uint8_t client_sock = client_sock_buf[0];
+        if (client_sock == 255) return; // no client yet
+
+        telnet_client_socket = client_sock;
+
+        // Send telnet negotiation options
+        nina_param_t tp[2];
+        uint8_t cs = client_sock;
+        tp[0].data = &cs; tp[0].len = 1;
+        tp[1].data = (uint8_t *)telnet_init_options; tp[1].len = sizeof(telnet_init_options) - 1;
+        nina_command(CMD_SEND_DATA_TCP, 2, tp, resp1, 1, &nresp);
+
+        // Send welcome banner
+        const char *welcome = "\r\nPicoMite Fruit Jam Telnet Console\r\n> ";
+        tp[1].data = (uint8_t *)welcome; tp[1].len = strlen(welcome);
+        nina_command(CMD_SEND_DATA_TCP, 2, tp, resp1, 1, &nresp);
+        return;
+    }
+
+    // Check client still connected
+    uint8_t cs = telnet_client_socket;
+    uint8_t state = 0;
+    nina_param_t sp[1], sr[1];
+    sp[0].data = &cs; sp[0].len = 1;
+    sr[0].data = &state; sr[0].len = 1;
+    nina_command(CMD_GET_CLIENT_STATE, 1, sp, sr, 1, &nresp);
+    if (state != 4 && state != 0) { // not ESTABLISHED
+        // Client disconnected
+        nina_param_t cp[1];
+        cp[0].data = &cs; cp[0].len = 1;
+        nina_command(CMD_STOP_CLIENT_TCP, 1, cp, resp1, 1, &nresp);
+        telnet_client_socket = -1;
+        return;
+    }
+
+    // Check for available data from client
+    uint8_t avail_buf[2] = {0};
+    nina_param_t ap[1], ar[1];
+    ap[0].data = &cs; ap[0].len = 1;
+    ar[0].data = avail_buf; ar[0].len = 2;
+    if (!nina_command(CMD_AVAIL_DATA_TCP, 1, ap, ar, 1, &nresp) || nresp == 0)
+        return;
+
+    uint16_t avail = (ar[0].len == 1) ? avail_buf[0] : (avail_buf[0] | (avail_buf[1] << 8));
+    if (avail == 0) return;
+
+    // Read data
+    uint8_t rxbuf[64];
+    uint16_t want = avail > sizeof(rxbuf) ? sizeof(rxbuf) : avail;
+    uint8_t req_len[2] = {want & 0xFF, (want >> 8) & 0xFF};
+    nina_param_t rp[2], rr[1];
+    rp[0].data = &cs; rp[0].len = 1;
+    rp[1].data = req_len; rp[1].len = 2;
+    rr[0].data = rxbuf; rr[0].len = sizeof(rxbuf);
+    if (!nina_command(CMD_GET_DATABUF_TCP, 2, rp, rr, 1, &nresp))
+        return;
+
+    uint16_t received = rr[0].len;
+    if (received == 0) return;
+
+    // Feed bytes into ConsoleRxBuf
+    extern volatile char ConsoleRxBuf[];
+    extern volatile int ConsoleRxBufHead, ConsoleRxBufTail;
+    extern volatile int MMAbort;
+    static int lastchar = -1;
+
+    for (int j = 0; j < received; j++) {
+        uint8_t c = rxbuf[j];
+
+        // Skip telnet IAC sequences (0xFF + command + option)
+        if (c == 255) { j += 2; continue; }
+
+        // Filter CR-NULL (telnet sends CR followed by NULL)
+        if (lastchar == 13 && c == 0) { lastchar = -1; continue; }
+
+        if (BreakKey && c == BreakKey) {
+            MMAbort = true;
+            ConsoleRxBufHead = ConsoleRxBufTail;
+        } else {
+            ConsoleRxBuf[ConsoleRxBufHead] = c;
+            lastchar = c;
+            ConsoleRxBufHead = (ConsoleRxBufHead + 1) % CONSOLE_RX_BUF_SIZE;
+            if (ConsoleRxBufHead == ConsoleRxBufTail)
+                ConsoleRxBufTail = (ConsoleRxBufTail + 1) % CONSOLE_RX_BUF_SIZE;
+        }
+    }
+}
+
+// Called from putConsole() - send output to telnet client
+void nina_telnet_putc(int c, int flush) {
+    if (telnet_client_socket < 0) return;
+
+    if (flush != -1) {
+        telnet_txbuf[telnet_txpos++] = c;
+        // Telnet: escape IAC (255) by doubling it
+        if (c == 255) telnet_txbuf[telnet_txpos++] = c;
+        // Telnet: CR must be followed by NUL
+        if (c == 13) telnet_txbuf[telnet_txpos++] = 0;
+    }
+
+    if (telnet_txpos >= sizeof(telnet_txbuf) - 4 || (flush == -1 && telnet_txpos) || (flush && telnet_txpos)) {
+        uint8_t sock = telnet_client_socket;
+        nina_param_t sp[2];
+        sp[0].data = &sock; sp[0].len = 1;
+        sp[1].data = (uint8_t *)telnet_txbuf; sp[1].len = telnet_txpos;
+        uint8_t result;
+        nina_param_t sr[1];
+        sr[0].data = &result; sr[0].len = 1;
+        int nresp;
+        nina_command(CMD_SEND_DATA_TCP, 2, sp, sr, 1, &nresp);
+        telnet_txpos = 0;
+    }
+}
+
+// Auto-connect WiFi and start telnet on boot (called from main init)
+void nina_wifi_autoconnect(void) {
+    extern struct option_s Option;
+
+    // Check if WiFi credentials are saved
+    if (Option.SSID[0] == 0) return;
+
+    MMPrintString("WiFi: connecting to ");
+    MMPrintString((char *)Option.SSID);
+    MMPrintString("...\r\n");
+
+    nina_wifi_init();
+
+    if (nina_wifi_connect((char *)Option.SSID, (char *)Option.PASSWORD)) {
+        WIFIconnected = 1;
+        char ip[20];
+        nina_get_ip_string(ip);
+        MMPrintString("WiFi: connected, IP ");
+        MMPrintString(ip);
+        MMPrintString("\r\n");
+
+        // Start telnet server if enabled
+        if (Option.Telnet) {
+            if (nina_telnet_start()) {
+                MMPrintString("Telnet: listening on port 23\r\n");
+            }
+        }
+    } else {
+        MMPrintString("WiFi: connection failed\r\n");
+    }
+}
+
 #endif // ADAFRUIT_FRUIT_JAM

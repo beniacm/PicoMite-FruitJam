@@ -645,6 +645,8 @@ extern void tlv320_enable_outputs(void);
                         ConsoleRxBufTail = (ConsoleRxBufTail + 1) % CONSOLE_RX_BUF_SIZE;
                 }
             }
+            // Poll telnet server for incoming data
+            { extern void nina_telnet_poll(void); nina_telnet_poll(); }
 #endif
         }
 #endif
@@ -828,6 +830,8 @@ extern void tlv320_enable_outputs(void);
             if (flush || c == '\n')
                 tud_cdc_write_flush();
         }
+        // Echo to telnet client
+        { extern void nina_telnet_putc(int c, int flush); nina_telnet_putc(c, flush); }
 #endif
     }
     // put a character out to the serial console
@@ -5979,6 +5983,10 @@ uint32_t testPSRAM(void)
 #endif
 #else
     start_i2s(QVGA_PIO_NUM, 1);
+#endif
+#if defined(ADAFRUIT_FRUIT_JAM)
+        // Auto-connect WiFi and start telnet if configured
+        { extern void nina_wifi_autoconnect(void); nina_wifi_autoconnect(); }
 #endif
         if (setjmp(mark) != 0)
         {
