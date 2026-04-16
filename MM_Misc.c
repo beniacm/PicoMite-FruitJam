@@ -7430,6 +7430,31 @@ void MIPS16 fun_info(void)
         targ = T_INT;
         return;
     }
+#ifdef ADAFRUIT_FRUIT_JAM
+    else if (checkstring(ep, (unsigned char *)"IP ADDRESS"))
+    {
+        extern void nina_get_ip_string(char *buf);
+        nina_get_ip_string((char *)sret);
+        CtoM(sret);
+        targ = T_STR;
+        return;
+    }
+    else if (checkstring(ep, (unsigned char *)"WIFI STATUS"))
+    {
+        extern uint8_t nina_get_conn_status(void);
+        iret = nina_get_conn_status();
+        targ = T_INT;
+        return;
+    }
+    else if (checkstring(ep, (unsigned char *)"WIFI VERSION"))
+    {
+        extern void nina_get_fw_version(char *buf);
+        nina_get_fw_version((char *)sret);
+        CtoM(sret);
+        targ = T_STR;
+        return;
+    }
+#endif
 #endif
     else if (checkstring(ep, (unsigned char *)"LINE"))
     {

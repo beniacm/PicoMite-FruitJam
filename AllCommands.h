@@ -246,7 +246,7 @@ void fun_ray(void);
 void ray_close(void);
 #endif
 
-#ifdef PICOMITEWEB
+#if defined(PICOMITEWEB) || defined(ADAFRUIT_FRUIT_JAM)
 void cmd_web(void);
 #endif
 
@@ -590,8 +590,10 @@ void fun_frame(void);
 #ifdef PICOMITE
 	{(unsigned char *)"Backlight", T_CMD, 0, cmd_backlight},
 #endif
+#if defined(PICOMITEWEB) || defined(ADAFRUIT_FRUIT_JAM)
 #ifdef PICOMITEWEB
 	{(unsigned char *)"Backlight", T_CMD, 0, cmd_backlight},
+#endif
 	{(unsigned char *)"WEB", T_CMD, 0, cmd_web},
 #else
 	{(unsigned char *)"Draw3D", T_CMD, 0, cmd_3D},

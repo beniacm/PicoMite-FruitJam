@@ -307,8 +307,10 @@ if(COMPILE STREQUAL "VGAUSB" OR COMPILE STREQUAL "PICOUSB" OR COMPILE STREQUAL "
 	)
 endif()
 
-# Fruit Jam uses PIO-USB for keyboard host
+# Fruit Jam uses PIO-USB for keyboard host + ESP32 WiFi
 if(COMPILE STREQUAL "FRUITJAM")
+	target_sources(PicoMite PRIVATE esp32_wifi.c)
+	set_source_files_properties(esp32_wifi.c PROPERTIES COMPILE_FLAGS -Os)
 	target_link_libraries(PicoMite
 	tinyusb_host
 	tinyusb_board
