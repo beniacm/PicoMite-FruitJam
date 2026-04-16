@@ -75,6 +75,28 @@ The response is stored in an integer array:
 
 Optional timeout (ms): `WEB TCP CLIENT REQUEST "data", r%(), 10000`
 
+### Program Transfer over WiFi
+
+Load and save BASIC programs over HTTP:
+
+```basic
+' Load a program from an HTTP server
+WEB LOAD "http://192.168.1.100:8080/myprogram.bas"
+
+' Save the current program to an HTTP server
+WEB SAVE "http://192.168.1.100:8080/backup.bas"
+```
+
+**WEB LOAD** sends an HTTP GET, parses the response, and saves the program to flash (replacing the current program). **WEB SAVE** detokens the current program and sends it via HTTP POST.
+
+A simple Python server works for both:
+```bash
+# Serve files for WEB LOAD:
+python3 -m http.server 8080
+
+# Or use a custom server that also accepts uploads for WEB SAVE
+```
+
 ## Pin Configuration (set by CONFIGURE FRUIT JAM)
 
 | Function | Pins |

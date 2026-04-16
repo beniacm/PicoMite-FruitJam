@@ -859,6 +859,207 @@ void cmd_web(void) {
         return;
     }
 
+    // WEB LOAD "http://host[:port]/path"
+    // Downloads a BASIC program over HTTP and loads it as the current program
+    tp = checkstring(cmdline, (unsigned char *)"LOAD");
+    if (tp) {
+        if (!WIFIconnected) error("WiFi not connected");
+
+        char *url = (char *)getCstring(tp);
+
+        // Parse URL: http://host[:port]/path
+        if (strncasecmp(url, "http://", 7) != 0) error("URL must start with http://");
+        char *hoststart = url + 7;
+        char *slash = strchr(hoststart, '/');
+        char *path = slash ? slash : "/";
+
+        // Extract host and port
+        char host[128];
+        int port = 80;
+        int hostlen = slash ? (slash - hoststart) : strlen(hoststart);
+        if (hostlen >= sizeof(host)) error("Host too long");
+        memcpy(host, hoststart, hostlen);
+        host[hostlen] = 0;
+
+        char *colon = strchr(host, ':');
+        if (colon) {
+            *colon = 0;
+            port = atoi(colon + 1);
+            if (port <= 0 || port > 65535) error("Invalid port");
+        }
+
+        // Connect
+        MMPrintString("Connecting to "); MMPrintString(host);
+        char tmp[16]; sprintf(tmp, ":%d...\r\n", port); MMPrintString(tmp);
+
+        if (!nina_tcp_open(host, port, 5000))
+            error("TCP connect failed");
+
+        // Send HTTP GET request
+        char req[384];
+        int rlen = snprintf(req, sizeof(req),
+            "GET %s HTTP/1.0\r\nHost: %s\r\nConnection: close\r\n\r\n",
+            path, host);
+
+        if (!nina_tcp_send((uint8_t *)req, rlen)) {
+            nina_tcp_close();
+            error("HTTP send failed");
+        }
+
+        // Receive full response
+        #define WEB_LOAD_BUFSIZE (64 * 1024)
+        uint8_t *buf = GetTempMemory(WEB_LOAD_BUFSIZE);
+        int total = 0;
+        sleep_ms(200);
+        absolute_time_t deadline = make_timeout_time_ms(10000);
+
+        while (total < WEB_LOAD_BUFSIZE - 1 &&
+               absolute_time_diff_us(get_absolute_time(), deadline) > 0) {
+            CheckAbort();
+            uint16_t avail = nina_tcp_available();
+            if (avail > 0) {
+                uint16_t want = WEB_LOAD_BUFSIZE - 1 - total;
+                if (want > 512) want = 512;
+                uint16_t received;
+                if (nina_tcp_recv(buf + total, want, &received) && received > 0) {
+                    total += received;
+                    deadline = make_timeout_time_ms(2000);
+                }
+            } else {
+                sleep_ms(10);
+            }
+        }
+        buf[total] = 0;
+        nina_tcp_close();
+
+        if (total == 0) error("No response from server");
+
+        // Check HTTP status
+        if (strncmp((char *)buf, "HTTP/", 5) != 0) error("Invalid HTTP response");
+        char *status = strchr((char *)buf, ' ');
+        if (!status || atoi(status + 1) != 200) {
+            char errmsg[64];
+            snprintf(errmsg, sizeof(errmsg), "HTTP error: %.40s", status ? status + 1 : "unknown");
+            error(errmsg);
+        }
+
+        // Find body (after \r\n\r\n)
+        char *body = strstr((char *)buf, "\r\n\r\n");
+        if (!body) error("Invalid HTTP response (no body)");
+        body += 4;
+
+        int bodylen = total - (body - (char *)buf);
+        if (bodylen <= 0) error("Empty program");
+
+        sprintf(tmp, "Loaded %d bytes\r\n", bodylen);
+        MMPrintString(tmp);
+
+        // Load program: tokenize and save to flash
+        unsigned char *progbuf = GetTempMemory(bodylen + 16);
+        memcpy(progbuf, body, bodylen);
+        progbuf[bodylen] = 0;
+
+        ClearSavedVars();
+        SaveProgramToFlash(progbuf, true);
+        return;
+    }
+
+    // WEB SAVE "http://host[:port]/path"
+    // Uploads the current program via HTTP POST
+    tp = checkstring(cmdline, (unsigned char *)"SAVE");
+    if (tp) {
+        if (!WIFIconnected) error("WiFi not connected");
+
+        char *url = (char *)getCstring(tp);
+
+        // Parse URL
+        if (strncasecmp(url, "http://", 7) != 0) error("URL must start with http://");
+        char *hoststart = url + 7;
+        char *slash = strchr(hoststart, '/');
+        char *path = slash ? slash : "/";
+
+        char host[128];
+        int port = 80;
+        int hostlen = slash ? (slash - hoststart) : strlen(hoststart);
+        if (hostlen >= sizeof(host)) error("Host too long");
+        memcpy(host, hoststart, hostlen);
+        host[hostlen] = 0;
+
+        char *colon = strchr(host, ':');
+        if (colon) {
+            *colon = 0;
+            port = atoi(colon + 1);
+            if (port <= 0 || port > 65535) error("Invalid port");
+        }
+
+        // List program to buffer (reuse LIST output)
+        // We read from flash_progmemory and detoken each line
+        // Read current program from memory
+        unsigned char *pm = ProgMemory;
+        if (*pm == 0 || *pm == 0xFF) error("No program to save");
+
+        // Use GetTempMemory for program text buffer
+        #define WEB_SAVE_BUFSIZE (64 * 1024)
+        uint8_t *progbuf = GetTempMemory(WEB_SAVE_BUFSIZE);
+        int proglen = 0;
+
+        // Detoken program line by line
+        extern unsigned char *llist(unsigned char *b, unsigned char *p);
+        while (*pm != 0 && *pm != 0xFF) {
+            unsigned char *next = llist(progbuf + proglen, pm);
+            int ll = strlen((char *)progbuf + proglen);
+            // Add \r\n
+            progbuf[proglen + ll] = '\r';
+            progbuf[proglen + ll + 1] = '\n';
+            proglen += ll + 2;
+            if (proglen >= WEB_SAVE_BUFSIZE - 256) error("Program too large");
+            pm = next;
+        }
+        progbuf[proglen] = 0;
+
+        // Connect
+        if (!nina_tcp_open(host, port, 5000))
+            error("TCP connect failed");
+
+        // Send HTTP POST
+        char req[384];
+        int rlen = snprintf(req, sizeof(req),
+            "POST %s HTTP/1.0\r\nHost: %s\r\nContent-Type: text/plain\r\n"
+            "Content-Length: %d\r\nConnection: close\r\n\r\n",
+            path, host, proglen);
+
+        if (!nina_tcp_send((uint8_t *)req, rlen) ||
+            !nina_tcp_send(progbuf, proglen)) {
+            nina_tcp_close();
+            error("HTTP send failed");
+        }
+
+        // Read response (just check status)
+        sleep_ms(500);
+        uint8_t resp[256];
+        uint16_t received = 0;
+        nina_tcp_recv(resp, sizeof(resp) - 1, &received);
+        resp[received] = 0;
+        nina_tcp_close();
+
+        if (received > 0 && strncmp((char *)resp, "HTTP/", 5) == 0) {
+            char *st = strchr((char *)resp, ' ');
+            int code = st ? atoi(st + 1) : 0;
+            if (code >= 200 && code < 300) {
+                char tmp[32]; sprintf(tmp, "Saved %d bytes\r\n", proglen);
+                MMPrintString(tmp);
+            } else {
+                char errmsg[64];
+                snprintf(errmsg, sizeof(errmsg), "HTTP error: %.40s", st ? st + 1 : "unknown");
+                error(errmsg);
+            }
+        } else {
+            char tmp[32]; sprintf(tmp, "Sent %d bytes\r\n", proglen);
+            MMPrintString(tmp);
+        }
+        return;
+    }
+
     error("Unknown WEB command");
 }
 
