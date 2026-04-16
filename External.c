@@ -491,8 +491,10 @@ void SoftReset(int code)
 #endif
 #ifdef USBKEYBOARD
     USBenabled = false;
-    uSec(50000); // wait for outstanding requests to complete
 #endif
+    // Disable all interrupts so nothing (PIO-USB alarm IRQ, etc.) can
+    // prevent the watchdog from being our next event
+    save_and_disable_interrupts();
     watchdog_enable(1, 1);
     while (1)
     {

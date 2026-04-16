@@ -625,6 +625,7 @@ extern void tlv320_enable_outputs(void);
 #if defined(ADAFRUIT_FRUIT_JAM)
             // Process USB CDC device (serial console on hardware USB)
             tud_task();
+            { extern void usb_reset_check(void); usb_reset_check(); } // handle deferred picotool reboot requests
             if (tud_cdc_available()) {
                 uint8_t buf[64];
                 uint32_t count = tud_cdc_read(buf, sizeof(buf));
@@ -5387,13 +5388,9 @@ uint32_t testPSRAM(void)
             _excep_code = watchdog_hw->scratch[0];
             watchdog_hw->scratch[0] = 0;
         }
-        // Fruit Jam has no UART adapter - disable serial console to prevent noise
-        if (Option.SerialConsole) {
-            Option.SerialConsole = 0;
-            Option.SerialTX = 0;
-            Option.SerialRX = 0;
-            SaveOptions();
-        }
+        // Fruit Jam has no UART adapter - override serial console in RAM
+        // (don't SaveOptions here - flash write during early boot can hang)
+        Option.SerialConsole = 0;
 #endif
 #ifdef rp2350
         if (rom_get_last_boot_type() == BOOT_TYPE_FLASH_UPDATE)

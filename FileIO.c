@@ -6507,6 +6507,13 @@ void ResetAllFlash(void)
 {
     ResetOptions(true);
     ClearSavedVars();
+#if defined(ADAFRUIT_FRUIT_JAM)
+    // PIO-USB already stopped by ClearSavedVars and not yet restarted if we
+    // call this in sequence, but stop again to be safe for standalone calls
+    extern bool USBenabled;
+    extern void pio_usb_host_stop(void);
+    if (USBenabled) pio_usb_host_stop();
+#endif
     disable_interrupts_pico();
     for (int i = 0; i < MAXFLASHSLOTS + 1; i++)
     {
@@ -6520,6 +6527,7 @@ void ResetAllFlash(void)
     FlashWriteByte(0);
     FlashWriteByte(0); // terminate the program in flash
     FlashWriteClose();
+    // No PIO-USB restart needed - ResetAllFlash is always followed by a reboot
 }
 void FlashWriteInit(int region)
 {
@@ -6824,10 +6832,20 @@ void MIPS16 cmd_var(void)
 void ClearSavedVars(void)
 {
     uSec(250000);
+#if defined(ADAFRUIT_FRUIT_JAM)
+    extern bool USBenabled;
+    extern void pio_usb_host_stop(void);
+    if (USBenabled) pio_usb_host_stop();
+#endif
     disable_interrupts_pico();
     safe_flash_range_erase(FLASH_TARGET_OFFSET + FLASH_ERASE_SIZE, SAVEDVARS_FLASH_SIZE);
     enable_interrupts_pico();
     uSec(10000);
+#if defined(ADAFRUIT_FRUIT_JAM)
+    extern void pio_usb_host_restart(void);
+    extern bool pio_usb_reconnecting;
+    if (USBenabled) { pio_usb_reconnecting = true; pio_usb_host_restart(); pio_usb_reconnecting = false; }
+#endif
 }
 unsigned short hashversion(void)
 {
@@ -6846,6 +6864,12 @@ void SaveOptions(void)
 {
     Option.version = hashversion();
     uSec(100000);
+#if defined(ADAFRUIT_FRUIT_JAM)
+    // Stop PIO-USB before flash ops (SOF timer can't survive interrupts-off period)
+    extern bool USBenabled;
+    extern void pio_usb_host_stop(void);
+    if (USBenabled) pio_usb_host_stop();
+#endif
     disable_interrupts_pico();
     safe_flash_range_erase(FLASH_TARGET_OFFSET, FLASH_ERASE_SIZE);
     enable_interrupts_pico();
@@ -6853,5 +6877,8 @@ void SaveOptions(void)
     disable_interrupts_pico();
     safe_flash_range_program(FLASH_TARGET_OFFSET, (const uint8_t *)&Option, sizeof(struct option_s));
     enable_interrupts_pico();
+    // PIO-USB stays stopped. Callers that return to normal operation
+    // (OPTION F-keys, LIBRARY SAVE, etc.) won't use keyboard until next
+    // command anyway, and SoftReset callers (CONFIGURE) need it stopped.
 }
 /*  @endcond */
