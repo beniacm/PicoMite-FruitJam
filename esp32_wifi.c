@@ -274,7 +274,7 @@ void nina_wifi_init(void) {
     gpio_put(NINA_RESET_PIN, 1);
     sleep_ms(1500);
 
-    // Re-init audio codec since we toggled shared reset
+    // Re-init audio codec (its init pulses GP22 which resets ESP32 again!)
     if (Option.audio_i2s_bclk) {
         extern void tlv320_init(void);
         extern void tlv320_enable_outputs(void);
@@ -283,7 +283,10 @@ void nina_wifi_init(void) {
         tlv320_enable_outputs();
     }
 
-    // Throwaway commands to sync SPI (first after reset fails, second clears state)
+    // Wait for ESP32 to boot AGAIN after codec init reset GP22
+    sleep_ms(1500);
+
+    // Throwaway commands to sync SPI
     uint8_t ver[16] = {0};
     nina_param_t resp[1];
     resp[0].data = ver; resp[0].len = sizeof(ver);
