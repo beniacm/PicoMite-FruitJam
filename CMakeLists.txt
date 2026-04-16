@@ -309,10 +309,11 @@ endif()
 
 # Fruit Jam uses PIO-USB for keyboard host + ESP32 WiFi
 if(COMPILE STREQUAL "FRUITJAM")
-	target_sources(PicoMite PRIVATE esp32_wifi.c)
+	target_sources(PicoMite PRIVATE esp32_wifi.c usb_cdc_descriptors.c)
 	set_source_files_properties(esp32_wifi.c PROPERTIES COMPILE_FLAGS -Os)
 	target_link_libraries(PicoMite
 	tinyusb_host
+	tinyusb_device
 	tinyusb_board
 	tinyusb_pico_pio_usb
 	pico_multicore

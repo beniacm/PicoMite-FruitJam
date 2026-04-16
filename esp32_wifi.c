@@ -283,11 +283,13 @@ void nina_wifi_init(void) {
         tlv320_enable_outputs();
     }
 
-    // Throwaway command to sync SPI (first after reset always fails)
+    // Throwaway commands to sync SPI (first after reset fails, second clears state)
     uint8_t ver[16] = {0};
     nina_param_t resp[1];
     resp[0].data = ver; resp[0].len = sizeof(ver);
     int nresp = 0;
+    nina_command(CMD_GET_FW_VERSION, 0, NULL, resp, 1, &nresp);
+    sleep_ms(200);
     nina_command(CMD_GET_FW_VERSION, 0, NULL, resp, 1, &nresp);
     sleep_ms(100);
 

@@ -8,4 +8,3 @@ build/
 *.map
 doom_fb.c
 hdmi_test.c
-usb_cdc_descriptors.c

@@ -39,9 +39,14 @@
 //--------------------------------------------------------------------+
 
 #if defined(ADAFRUIT_FRUIT_JAM)
-// Fruit Jam uses PIO-USB for host keyboard on GPIO 1/2
+// Fruit Jam: PIO-USB host on port 1, CDC device on port 0
 #define CFG_TUH_RPI_PIO_USB   1
 #define BOARD_TUH_RHPORT      1
+#define CFG_TUD_ENABLED       1
+#define BOARD_TUD_RHPORT      0
+#define CFG_TUD_CDC           1
+#define CFG_TUD_CDC_RX_BUFSIZE 256
+#define CFG_TUD_CDC_TX_BUFSIZE 256
 #elif CFG_TUSB_MCU == OPT_MCU_RP2040
 // change to 1 if using pico-pio-usb as host controller for raspberry rp2040
 #define CFG_TUH_RPI_PIO_USB   0

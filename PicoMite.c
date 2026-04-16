@@ -622,6 +622,29 @@ extern void tlv320_enable_outputs(void);
         {
             tuh_task();
             hid_app_task();
+#if defined(ADAFRUIT_FRUIT_JAM)
+            // Process USB CDC device (serial console on hardware USB)
+            tud_task();
+            if (tud_cdc_available()) {
+                uint8_t buf[64];
+                uint32_t count = tud_cdc_read(buf, sizeof(buf));
+                for (uint32_t i = 0; i < count; i++) {
+                    if (buf[i] == 0x00) {
+                        // Null byte = reboot to bootloader (for picotool)
+                        reset_usb_boot(0, 0);
+                    }
+                    if (BreakKey && buf[i] == BreakKey) {
+                        MMAbort = true;
+                        ConsoleRxBufHead = ConsoleRxBufTail;
+                        break;
+                    }
+                    ConsoleRxBuf[ConsoleRxBufHead] = buf[i];
+                    ConsoleRxBufHead = (ConsoleRxBufHead + 1) % CONSOLE_RX_BUF_SIZE;
+                    if (ConsoleRxBufHead == ConsoleRxBufTail)
+                        ConsoleRxBufTail = (ConsoleRxBufTail + 1) % CONSOLE_RX_BUF_SIZE;
+                }
+            }
+#endif
         }
 #endif
 #ifndef USBKEYBOARD
@@ -797,6 +820,14 @@ extern void tlv320_enable_outputs(void);
             DisplayPutC(c);
         if (OptionConsole & 1)
             SerialConsolePutC(c, flush);
+#if defined(ADAFRUIT_FRUIT_JAM)
+        // Echo to USB CDC serial
+        if (tud_cdc_connected()) {
+            tud_cdc_write_char(c);
+            if (flush || c == '\n')
+                tud_cdc_write_flush();
+        }
+#endif
     }
     // put a character out to the serial console
     char __not_in_flash_func(SerialConsolePutC)(char c, int flush)
@@ -5907,6 +5938,8 @@ uint32_t testPSRAM(void)
             gpio_put(11, 1);
             tuh_configure(BOARD_TUH_RHPORT, TUH_CFGID_RPI_PIO_USB_CONFIGURATION, &pio_cfg);
             tuh_init(BOARD_TUH_RHPORT);
+            // Init USB device on hardware USB (port 0) for CDC serial + picotool reboot
+            tud_init(0);
             // Reserve PIO-USB pins so PicoMite's pin reset doesn't reconfigure them
             // GPIO 1 (D+) = PINMAP[1] = pin 2, GPIO 2 (D-) = PINMAP[2] = pin 4, GPIO 11 (VBUS) = PINMAP[11] = pin 15
             ExtCurrentConfig[PINMAP[1]] = EXT_BOOT_RESERVED;
