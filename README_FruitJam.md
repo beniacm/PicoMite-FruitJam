@@ -1,6 +1,6 @@
 # PicoMite HDMI for Adafruit Fruit Jam
 
-PicoMite MMBasic 6.02.02b0 ported to the [Adafruit Fruit Jam](https://www.adafruit.com/product/6363) (RP2350B) with HDMI display, USB keyboard via USB-A host port, and I2S audio.
+PicoMite MMBasic 6.02.02b0 ported to the [Adafruit Fruit Jam](https://www.adafruit.com/product/6363) (RP2350B) with HDMI display, USB keyboard via USB-A host port, I2S audio, and WiFi via ESP32-C6.
 
 Based on [PicoMiteAllVersions](https://github.com/UKTailwind/PicoMiteAllVersions) with [PR#25](https://github.com/UKTailwind/PicoMiteAllVersions/pull/25) TLV320DAC3100 codec support by inindev, plus PIO-USB keyboard host.
 
@@ -21,6 +21,9 @@ Based on [PicoMiteAllVersions](https://github.com/UKTailwind/PicoMiteAllVersions
 | USB mouse | Working | Via USB-A port |
 | I2S audio | Working | TLV320DAC3100 codec, speaker + headphone jack |
 | SD card | Working | GP34(CLK), GP35(MOSI), GP36(MISO), GP39(CS) |
+| WiFi | Working | ESP32-C6 via NINA SPI protocol |
+| NTP time sync | Working | `WEB NTP offset` sets RTC |
+| TCP client | Working | Connect, send/receive, close |
 | Heartbeat LED | Working | GP29 |
 | Flash save (F1) | Working | Keyboard briefly disconnects, reconnects after ~2s |
 
@@ -30,6 +33,47 @@ Based on [PicoMiteAllVersions](https://github.com/UKTailwind/PicoMiteAllVersions
 PLAY TONE 440, 440, 1000
 PLAY VOLUME 50, 50
 ```
+
+## WiFi
+
+The Fruit Jam has an ESP32-C6 co-processor running NINA firmware for WiFi. Commands match the PicoMiteWEB syntax.
+
+### WiFi Commands
+
+```basic
+' Connect to WiFi
+WEB CONNECT "SSID", "password"
+PRINT MM.INFO(IP ADDRESS)
+
+' Sync time via NTP (offset = hours from UTC)
+WEB NTP 2
+
+' TCP client
+WEB OPEN TCP CLIENT "hostname", port
+DIM INTEGER r%(100)
+WEB TCP CLIENT REQUEST "data to send", r%()
+PRINT "Received bytes:", r%(0)
+WEB CLOSE TCP CLIENT
+
+' Disconnect
+WEB DISCONNECT
+```
+
+### WiFi Info Functions
+
+| Function | Returns |
+|----------|---------|
+| `MM.INFO(IP ADDRESS)` | IP address string (e.g., "192.168.1.100") |
+| `MM.INFO(WIFI STATUS)` | Connection status (3=connected, 6=disconnected) |
+| `MM.INFO(WIFI VERSION)` | NINA firmware version string |
+
+### TCP CLIENT REQUEST
+
+The response is stored in an integer array:
+- `r%(0)` = number of bytes received
+- `r%(1)..r%(n)` = response data as raw bytes (8 bytes per integer, little-endian)
+
+Optional timeout (ms): `WEB TCP CLIENT REQUEST "data", r%(), 10000`
 
 ## Pin Configuration (set by CONFIGURE FRUIT JAM)
 
@@ -42,6 +86,8 @@ PLAY VOLUME 50, 50
 | System I2C | SDA=GP20, SCL=GP21 |
 | Serial console | TX=GP8, RX=GP9 (UART1, optional) |
 | Heartbeat LED | GP29 |
+| ESP32-C6 WiFi (SPI1) | SCK=GP30, MOSI=GP31, MISO=GP28, CS=GP46 |
+| ESP32-C6 control | ACK=GP3, RESET=GP22 (shared with codec) |
 | Codec reset | GP22 (shared with ESP32-C6) |
 
 ## Known Limitations
@@ -78,7 +124,9 @@ make -j$(nproc)
 
 | File | Change |
 |------|--------|
-| CMakeLists.txt | FRUITJAM build target with PIO-USB, adafruit_fruit_jam board |
+| CMakeLists.txt | FRUITJAM build target with PIO-USB, ESP32 WiFi, CDC serial |
+| esp32_wifi.c | WiFi via ESP32-C6 NINA SPI protocol (connect, TCP, NTP) |
+| usb_cdc_descriptors.c | USB CDC device descriptors for serial over USB-C |
 | configuration.h | FLASH_TARGET_OFFSET 1MB (firmware ~960KB) |
 | Custom.c | TLV320DAC3100 codec init (MCLK PWM, I2C register sequence) |
 | PicoMite.c | PIO-USB init, HSTX bus priority, clk_hstx config, codec calls, flash save stop/restart |

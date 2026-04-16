@@ -72,7 +72,8 @@
 #define CMD_GET_SOCKET          0x3F
 #define CMD_SEND_DATA_TCP       0x44
 #define CMD_GET_DATABUF_TCP     0x45
-#define CMD_SEND_DATA_UDP       0x46
+#define CMD_INSERT_DATABUF      0x46
+#define CMD_SEND_UDP_DATA       0x39
 
 // ============================================================================
 // Data Types
@@ -162,9 +163,11 @@ static bool nina_send_cmd(uint8_t cmd, uint8_t num_params,
     nina_spi_transfer(cmd & ~REPLY_FLAG); bytes_sent++;
     nina_spi_transfer(num_params); bytes_sent++;
 
+    bool data_flag = (cmd & 0x40) != 0; // DATA_FLAG commands use 16-bit lengths
+
     for (int i = 0; i < num_params; i++) {
-        if (params[i].len > 255) {
-            // 16-bit length for large params
+        if (data_flag || params[i].len > 255) {
+            // 16-bit length for DATA_FLAG commands or large params
             nina_spi_transfer((params[i].len >> 8) & 0xFF); bytes_sent++;
             nina_spi_transfer(params[i].len & 0xFF); bytes_sent++;
         } else {
@@ -187,8 +190,8 @@ static bool nina_send_cmd(uint8_t cmd, uint8_t num_params,
     return true;
 }
 
-static int nina_read_response(uint8_t expected_cmd, nina_param_t *resp,
-                              int max_resp) {
+static int nina_read_response_ex(uint8_t expected_cmd, nina_param_t *resp,
+                                 int max_resp, bool data_flag) {
     // Wait for response ready
     if (!nina_wait_ack(false, 5000)) {
         return -1;
@@ -220,19 +223,23 @@ static int nina_read_response(uint8_t expected_cmd, nina_param_t *resp,
 
     // Read each parameter
     for (int i = 0; i < num_params; i++) {
-        uint8_t plen = nina_spi_transfer(DUMMY_BYTE);
-        // Check for 16-bit length (high bit set on first byte)
         uint16_t param_len;
-        if (plen & 0x80) {
-            param_len = ((plen & 0x7F) << 8) | nina_spi_transfer(DUMMY_BYTE);
+        if (data_flag) {
+            // DATA_FLAG responses always use 16-bit lengths (big-endian)
+            uint8_t hi = nina_spi_transfer(DUMMY_BYTE);
+            uint8_t lo = nina_spi_transfer(DUMMY_BYTE);
+            param_len = (hi << 8) | lo;
         } else {
-            param_len = plen;
+            uint8_t plen = nina_spi_transfer(DUMMY_BYTE);
+            if (plen & 0x80) {
+                param_len = ((plen & 0x7F) << 8) | nina_spi_transfer(DUMMY_BYTE);
+            } else {
+                param_len = plen;
+            }
         }
         resp[i].len = param_len;
-        // Read into spi_buf at offset to avoid overlap
         uint8_t *dest = resp[i].data;
         if (!dest) {
-            // Skip data if no buffer provided
             for (int j = 0; j < param_len; j++)
                 nina_spi_transfer(DUMMY_BYTE);
         } else {
@@ -242,10 +249,15 @@ static int nina_read_response(uint8_t expected_cmd, nina_param_t *resp,
     }
 
     // Read END_CMD
-    nina_spi_transfer(DUMMY_BYTE); // END_CMD
+    nina_spi_transfer(DUMMY_BYTE);
 
     nina_cs_deassert();
     return num_params;
+}
+
+static int nina_read_response(uint8_t expected_cmd, nina_param_t *resp,
+                              int max_resp) {
+    return nina_read_response_ex(expected_cmd, resp, max_resp, false);
 }
 
 static bool nina_command(uint8_t cmd, uint8_t num_params,
@@ -253,7 +265,10 @@ static bool nina_command(uint8_t cmd, uint8_t num_params,
                          nina_param_t *resp, int max_resp, int *num_resp) {
     if (!nina_send_cmd(cmd, num_params, params))
         return false;
-    int n = nina_read_response(cmd, resp, max_resp);
+    // Only CMD_GET_DATABUF_TCP uses 16-bit response lengths (waitResponseData16)
+    // CMD_SEND_DATA_TCP response uses 8-bit lengths (waitResponseData8)
+    bool resp_data16 = (cmd == CMD_GET_DATABUF_TCP);
+    int n = nina_read_response_ex(cmd, resp, max_resp, resp_data16);
     if (n < 0) return false;
     if (num_resp) *num_resp = n;
     return true;
@@ -513,7 +528,10 @@ uint16_t nina_tcp_available(void) {
     resp[0].len = 2;
     int nresp;
     if (nina_command(CMD_AVAIL_DATA_TCP, 1, params, resp, 1, &nresp) && nresp > 0) {
-        return (avail_buf[0] << 8) | avail_buf[1];
+        if (resp[0].len == 1)
+            return avail_buf[0];
+        // NINA firmware sends 16-bit available as little-endian (ESP32 native)
+        return avail_buf[0] | (avail_buf[1] << 8);
     }
     return 0;
 }
@@ -538,6 +556,7 @@ bool nina_tcp_send(const uint8_t *data, uint16_t len) {
         resp[0].len = 2;
         int nresp;
 
+        // CMD_SEND_DATA_TCP (0x44) has DATA_FLAG - nina_send_cmd handles 16-bit lengths
         if (!nina_command(CMD_SEND_DATA_TCP, 2, params, resp, 1, &nresp))
             return false;
 
@@ -550,7 +569,8 @@ bool nina_tcp_send(const uint8_t *data, uint16_t len) {
 bool nina_tcp_recv(uint8_t *buf, uint16_t bufsize, uint16_t *received) {
     if (tcp_socket < 0) return false;
     uint8_t sock = tcp_socket;
-    uint8_t req_len[2] = {(bufsize >> 8) & 0xFF, bufsize & 0xFF};
+    // NINA firmware reads requested length as little-endian (ESP32 native)
+    uint8_t req_len[2] = {bufsize & 0xFF, (bufsize >> 8) & 0xFF};
 
     nina_param_t params[2];
     params[0].data = &sock;
@@ -608,43 +628,53 @@ void nina_ntp_sync(int32_t utc_offset_seconds) {
         return;
     }
 
-    // Use socket 1 for NTP UDP
-    uint8_t sock = 1;
-
-    // Open UDP connection to NTP server port 123
-    uint8_t ip_bytes[4];
-    memcpy(ip_bytes, &ntp_ip, 4);
-    uint8_t port_bytes[2] = {0, 123}; // port 123
-    uint8_t local_port[2] = {0xC0, 0x00}; // local port 49152
-    uint8_t type = 1; // UDP
-
-    nina_param_t params[4];
-    params[0].data = ip_bytes; params[0].len = 4;
-    params[1].data = port_bytes; params[1].len = 2;
-    params[2].data = &sock; params[2].len = 1;
-    params[3].data = &type; params[3].len = 1;
-
     uint8_t result;
     nina_param_t resp[1];
     resp[0].data = &result;
     resp[0].len = 1;
     int nresp;
 
-    if (!nina_command(CMD_START_CLIENT_TCP, 4, params, resp, 1, &nresp)) {
+    // Use socket 1 for UDP (socket 0 is for TCP)
+    uint8_t sock = 1;
+    uint8_t udp_mode = 1; // UDP
+
+    // Open UDP connection to NTP server port 123
+    uint8_t ip_bytes[4];
+    memcpy(ip_bytes, &ntp_ip, 4);
+    uint8_t port_bytes[2] = {0, 123}; // port 123 big-endian
+    nina_param_t cli_p[4];
+    cli_p[0].data = ip_bytes; cli_p[0].len = 4;
+    cli_p[1].data = port_bytes; cli_p[1].len = 2;
+    cli_p[2].data = &sock; cli_p[2].len = 1;
+    cli_p[3].data = &udp_mode; cli_p[3].len = 1;
+    if (!nina_command(CMD_START_CLIENT_TCP, 4, cli_p, resp, 1, &nresp)) {
         error("Cannot open UDP socket");
         return;
     }
+    sleep_ms(100); // let socket setup complete
 
     // Build NTP request
     uint8_t ntp_req[48] = {0};
     ntp_req[0] = 0x1B; // LI=0, VN=3, Mode=3 (client)
 
-    // Send NTP request
+    // Buffer NTP data (INSERT_DATABUF)
     nina_param_t sp[2];
     sp[0].data = &sock; sp[0].len = 1;
     sp[1].data = ntp_req; sp[1].len = 48;
-    if (!nina_command(CMD_SEND_DATA_TCP, 2, sp, resp, 1, &nresp)) {
-        nina_tcp_close();
+    if (!nina_command(CMD_INSERT_DATABUF, 2, sp, resp, 1, &nresp)) {
+        nina_param_t cp[1];
+        cp[0].data = &sock; cp[0].len = 1;
+        nina_command(CMD_STOP_CLIENT_TCP, 1, cp, resp, 1, &nresp);
+        error("NTP send failed");
+        return;
+    }
+    // Trigger actual UDP send (SEND_UDP_DATA)
+    nina_param_t udp_p[1];
+    udp_p[0].data = &sock; udp_p[0].len = 1;
+    if (!nina_command(CMD_SEND_UDP_DATA, 1, udp_p, resp, 1, &nresp)) {
+        nina_param_t cp[1];
+        cp[0].data = &sock; cp[0].len = 1;
+        nina_command(CMD_STOP_CLIENT_TCP, 1, cp, resp, 1, &nresp);
         error("NTP send failed");
         return;
     }
@@ -661,9 +691,9 @@ void nina_ntp_sync(int32_t utc_offset_seconds) {
         nina_param_t ar[1];
         ar[0].data = avail_buf; ar[0].len = 2;
         if (nina_command(CMD_AVAIL_DATA_TCP, 1, ap, ar, 1, &nresp) && nresp > 0) {
-            uint16_t avail = (avail_buf[0] << 8) | avail_buf[1];
+            uint16_t avail = (ar[0].len == 1) ? avail_buf[0] : (avail_buf[0] | (avail_buf[1] << 8));
             if (avail >= 48) {
-                uint8_t req_len[2] = {0, 48};
+                uint8_t req_len[2] = {48, 0}; // little-endian
                 nina_param_t rp[2];
                 rp[0].data = &sock; rp[0].len = 1;
                 rp[1].data = req_len; rp[1].len = 2;
@@ -771,7 +801,8 @@ void cmd_web(void) {
         return;
     }
 
-    // WEB TCP CLIENT REQUEST request$, response$() [, timeout]
+    // WEB TCP CLIENT REQUEST request$, response%() [, timeout]
+    // Response stored in integer array as raw bytes (matching PICOMITEWEB)
     tp = checkstring(cmdline, (unsigned char *)"TCP CLIENT REQUEST");
     if (tp) {
         if (!WIFIconnected) error("WiFi not connected");
@@ -780,46 +811,44 @@ void cmd_web(void) {
         getargs(&tp, 5, (unsigned char *)",");
         if (argc < 3) error("Syntax");
 
-        char *request = (char *)getCstring(argv[0]);
-        int req_len = strlen(request);
+        // Get request string (MMBasic counted string: byte0=len, byte1+=data)
+        char *request = (char *)getstring(argv[0]);
+        int req_len = request[0]; // MMBasic string length
 
-        // Get destination array
-        void *ptr = findvar(argv[2], V_FIND);
-        if (g_vartbl[g_VarIndex].type != T_STR) error("Expected string array");
-        char *dest = (char *)ptr;
-        int array_size = g_vartbl[g_VarIndex].dims[0] + 1 - g_OptionBase;
+        // Get destination integer array
+        int64_t *dest = NULL;
+        int size = parseintegerarray(argv[2], &dest, 2, 1, NULL, true, NULL) * 8;
 
         int timeout = (argc >= 5) ? getint(argv[4], 1, 30000) : 5000;
 
         // Send request
-        if (!nina_tcp_send((uint8_t *)request, req_len))
+        if (!nina_tcp_send((uint8_t *)&request[1], req_len))
             error("TCP send failed");
 
-        // Receive response into array elements
-        sleep_ms(100); // give server time to respond
-        int elem = 0;
+        // Receive response into integer array as raw bytes
+        dest[0] = 0; // first element = total received bytes
+        uint8_t *q = (uint8_t *)&dest[1];
+        int total = 0;
+        sleep_ms(200); // wait for response to arrive
         absolute_time_t deadline = make_timeout_time_ms(timeout);
 
-        while (elem < array_size &&
+        while (total < (size - 8) &&
                absolute_time_diff_us(get_absolute_time(), deadline) > 0) {
             CheckAbort();
             uint16_t avail = nina_tcp_available();
             if (avail > 0) {
-                uint8_t chunk[256];
+                uint16_t want = (size - 8) - total;
+                if (want > 512) want = 512;
                 uint16_t received;
-                if (nina_tcp_recv(chunk, sizeof(chunk), &received) && received > 0) {
-                    // Store in string array element
-                    char *s = dest + elem * (MAXSTRLEN + 1);
-                    int copy_len = (received > MAXSTRLEN) ? MAXSTRLEN : received;
-                    s[0] = copy_len; // MMBasic string length byte
-                    memcpy(s + 1, chunk, copy_len);
-                    elem++;
-                    deadline = make_timeout_time_ms(500); // reset timeout for more data
+                if (nina_tcp_recv(q + total, want, &received) && received > 0) {
+                    total += received;
+                    deadline = make_timeout_time_ms(500);
                 }
             } else {
                 sleep_ms(10);
             }
         }
+        dest[0] = total;
         return;
     }
 

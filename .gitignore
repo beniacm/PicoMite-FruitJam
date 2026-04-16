@@ -8,3 +8,4 @@ build/
 *.map
 doom_fb.c
 hdmi_test.c
+test_cdc.py
