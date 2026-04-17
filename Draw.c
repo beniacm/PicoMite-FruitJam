@@ -6551,8 +6551,11 @@ void cmd_sprite(void)
     CheckDisplay();
     maxW = HRes;
     maxH = VRes;
+    // MODE 4 (RGB555) and MODE 5 (256-color) sprite support enabled for Fruit Jam
+#ifndef ADAFRUIT_FRUIT_JAM
     if (DISPLAY_TYPE == SCREENMODE4 || DISPLAY_TYPE == SCREENMODE5)
         error("Not available for this display mode");
+#endif
     if ((p = checkstring(cmdline, (unsigned char *)"SHOW SAFE")))
     {
         int layer, mode = 1;
