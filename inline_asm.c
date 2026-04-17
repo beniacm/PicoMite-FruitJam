@@ -350,6 +350,40 @@ static void asm_line(char *line) {
         return;
     }
 
+    // ---- ADD SP, SP, #imm / SUB SP, SP, #imm (stack adjust) ----
+    if ((strcmp(mnem, "ADD") == 0 || strcmp(mnem, "ADDS") == 0 ||
+         strcmp(mnem, "SUB") == 0 || strcmp(mnem, "SUBS") == 0)) {
+        char *saved_p = p;
+        int rd = parse_reg(&p);
+        if (rd == 13) { // SP
+            expect_comma(&p);
+            char *saved2 = p;
+            int rs = parse_reg(&p);
+            if (rs == 13) { // ADD SP, SP, #imm
+                expect_comma(&p);
+                int imm;
+                if (parse_imm(&p, &imm) && (imm & 3) == 0 && imm >= 0 && imm <= 508) {
+                    if (mnem[0] == 'A')
+                        asm_emit16(0xB000 | ((imm >> 2) & 0x7F));
+                    else
+                        asm_emit16(0xB080 | ((imm >> 2) & 0x7F));
+                    return;
+                }
+            }
+            p = saved2;
+            // ADD SP, #imm (2-operand shorthand)
+            int imm;
+            if (parse_imm(&p, &imm) && (imm & 3) == 0 && imm >= 0 && imm <= 508) {
+                if (mnem[0] == 'A')
+                    asm_emit16(0xB000 | ((imm >> 2) & 0x7F));
+                else
+                    asm_emit16(0xB080 | ((imm >> 2) & 0x7F));
+                return;
+            }
+        }
+        p = saved_p; // fall through to general ALU
+    }
+
     // ---- MOV Rd, #imm8 / MOV Rd, Rs ----
     if (strcmp(mnem, "MOV") == 0 || strcmp(mnem, "MOVS") == 0) {
         int rd = parse_reg(&p);
