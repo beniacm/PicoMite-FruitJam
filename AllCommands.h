@@ -250,6 +250,11 @@ void ray_close(void);
 void cmd_web(void);
 #endif
 
+#if defined(ADAFRUIT_FRUIT_JAM)
+void cmd_asm(void);
+void fun_usr(void);
+#endif
+
 #ifdef rp2350
 void cmd_loadCMM2(void);
 void cmd_RunCMM2(void);
@@ -595,6 +600,9 @@ void fun_frame(void);
 	{(unsigned char *)"Backlight", T_CMD, 0, cmd_backlight},
 #endif
 	{(unsigned char *)"WEB", T_CMD, 0, cmd_web},
+#ifdef ADAFRUIT_FRUIT_JAM
+	{(unsigned char *)"ASM", T_CMD, 0, cmd_asm},
+#endif
 #else
 	{(unsigned char *)"Draw3D", T_CMD, 0, cmd_3D},
 #endif
@@ -742,6 +750,9 @@ void fun_frame(void);
 	{(unsigned char *)"Bin2str$(", T_FUN | T_STR, 0, fun_bin2str},
 	{(unsigned char *)"Str2bin(", T_FUN | T_NBR | T_INT, 0, fun_str2bin},
 	{(unsigned char *)"Call(", T_FUN | T_STR | T_INT | T_NBR, 0, fun_call},
+#ifdef ADAFRUIT_FRUIT_JAM
+	{(unsigned char *)"USR(", T_FUN | T_INT, 0, fun_usr},
+#endif
 	{(unsigned char *)"For", T_NA, 0, op_invalid},
 	{(unsigned char *)"Else", T_NA, 0, op_invalid},
 	{(unsigned char *)"GoSub", T_NA, 0, op_invalid},

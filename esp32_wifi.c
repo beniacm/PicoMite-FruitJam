@@ -1277,28 +1277,28 @@ void nina_wifi_autoconnect(void) {
     // Check if WiFi credentials are saved
     if (Option.SSID[0] == 0) return;
 
-    MMPrintString("WiFi: connecting to ");
-    MMPrintString((char *)Option.SSID);
-    MMPrintString("...\r\n");
+    MMPrintString("WiFi: connecting...\r\n");
 
+    // Init ESP32 SPI with timeout protection
     nina_wifi_init();
 
+    // Try to connect with a reasonable timeout
     if (nina_wifi_connect((char *)Option.SSID, (char *)Option.PASSWORD)) {
         WIFIconnected = 1;
         char ip[20];
         nina_get_ip_string(ip);
-        MMPrintString("WiFi: connected, IP ");
+        MMPrintString("WiFi: ");
         MMPrintString(ip);
         MMPrintString("\r\n");
 
         // Start telnet server if enabled
         if (Option.Telnet) {
             if (nina_telnet_start()) {
-                MMPrintString("Telnet: listening on port 23\r\n");
+                MMPrintString("Telnet: port 23\r\n");
             }
         }
     } else {
-        MMPrintString("WiFi: connection failed\r\n");
+        MMPrintString("WiFi: failed\r\n");
     }
 }
 
