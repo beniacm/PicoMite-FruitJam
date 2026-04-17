@@ -122,19 +122,96 @@ static int parse_sreg(char **pp) {
     return -1;
 }
 
-// Parse immediate: #decimal or #0xhex
+// Parse immediate: #expression
+// Supports: #42, #0xFF, #-5, #myvar%, #PEEK(VARADDR x%), #(2+3)*4
+// On pass 0, tries simple parse; on pass 1, evaluates BASIC expressions
 static int parse_imm(char **pp, int *val) {
     char *p = skip_ws(*pp);
     if (*p != '#') return 0;
     p++;
-    if (p[0] == '0' && (p[1] == 'x' || p[1] == 'X'))
-        *val = strtol(p, &p, 16);
-    else if (p[0] == '-')
-        *val = strtol(p, &p, 10);
-    else
-        *val = strtol(p, &p, 10);
-    *pp = p;
-    return 1;
+
+    // Try simple numeric literal first (fast path)
+    char *endp;
+    if (p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) {
+        *val = strtol(p, &endp, 16);
+        if (endp > p) { *pp = endp; return 1; }
+    } else if (p[0] == '-' || isdigit(p[0])) {
+        *val = strtol(p, &endp, 10);
+        if (endp > p && !isalpha(*endp) && *endp != '_' && *endp != '(') { *pp = endp; return 1; }
+    }
+
+    // Not a simple literal - try BASIC variable or expression
+    {
+        char *start = p;
+        // Read the variable/expression name
+        char name[64];
+        int ni = 0;
+        // Collect identifier (variable name with optional % $ ! suffix)
+        while (*p && (isalnum(*p) || *p == '_' || *p == '.' || *p == '%' || *p == '$' || *p == '!' || *p == '(' || *p == ')')) {
+            if (ni < 63) name[ni++] = *p;
+            p++;
+        }
+        name[ni] = 0;
+
+        if (ni > 0) {
+            // Try to find as BASIC variable (return NULL if not found)
+            void *ptr = findvar((unsigned char *)name, V_NOFIND_NULL);
+            if (ptr) {
+                // Determine type from name suffix: % = integer, ! or none = float
+                // findvar returns pointer to the variable's data
+                bool is_int = false;
+                for (int k = ni - 1; k >= 0; k--) {
+                    if (name[k] == '%') { is_int = true; break; }
+                    if (name[k] == '!' || name[k] == '$') break;
+                    if (!isalnum(name[k]) && name[k] != '_') break;
+                }
+                if (is_int) {
+                    *val = (int)(*(long long int *)ptr);
+                } else {
+                    *val = (int)(*(MMFLOAT *)ptr);
+                }
+
+                // Check for simple arithmetic: + - * /
+                p = skip_ws(p);
+                while (*p == '+' || *p == '-' || *p == '*' || *p == '/') {
+                    char op = *p++;
+                    p = skip_ws(p);
+                    int rhs;
+                    if (isdigit(*p) || *p == '-') {
+                        rhs = strtol(p, &p, 0);
+                    } else {
+                        // Try another variable
+                        char name2[64];
+                        int ni2 = 0;
+                        while (*p && (isalnum(*p) || *p == '_' || *p == '%' || *p == '!' || *p == '(' || *p == ')')) {
+                            if (ni2 < 63) name2[ni2++] = *p;
+                            p++;
+                        }
+                        name2[ni2] = 0;
+                        void *ptr2 = findvar((unsigned char *)name2, V_NOFIND_NULL);
+                        if (ptr2) {
+                            bool is_int2 = (strchr(name2, '%') != NULL);
+                            if (is_int2) rhs = (int)(*(long long int *)ptr2);
+                            else rhs = (int)(*(MMFLOAT *)ptr2);
+                        } else {
+                            rhs = 0;
+                        }
+                    }
+                    if (op == '+') *val += rhs;
+                    else if (op == '-') *val -= rhs;
+                    else if (op == '*') *val *= rhs;
+                    else if (op == '/' && rhs != 0) *val /= rhs;
+                    p = skip_ws(p);
+                }
+
+                *pp = p;
+                return 1;
+            }
+        }
+    }
+
+    // Could not parse
+    return 0;
 }
 
 // Expect and skip a comma
@@ -656,11 +733,11 @@ static void asm_line(char *line) {
         return;
     }
 
-    // ---- DCD value (emit raw 32-bit word) ----
-    if (strcmp(mnem, "DCD") == 0 || strcmp(mnem, "DW") == 0) {
+    // ---- Data directives ----
+    // DCD / EQUD - emit 32-bit word
+    if (strcmp(mnem, "DCD") == 0 || strcmp(mnem, "EQUD") == 0 || strcmp(mnem, "DW") == 0) {
         int val;
-        if (!parse_imm(&p, &val)) error("ASM: expected value for DCD");
-        // Emit as raw bytes (little-endian)
+        if (!parse_imm(&p, &val)) error("ASM: expected value");
         if (asm_pass == 1 && asm_pos + 4 <= ASM_MAX_CODE) {
             asm_code[asm_pos] = val & 0xFF;
             asm_code[asm_pos+1] = (val >> 8) & 0xFF;
@@ -668,6 +745,50 @@ static void asm_line(char *line) {
             asm_code[asm_pos+3] = (val >> 24) & 0xFF;
         }
         asm_pos += 4;
+        return;
+    }
+    // EQUW - emit 16-bit halfword
+    if (strcmp(mnem, "EQUW") == 0 || strcmp(mnem, "DCW") == 0) {
+        int val;
+        if (!parse_imm(&p, &val)) error("ASM: expected value");
+        if (asm_pass == 1 && asm_pos + 2 <= ASM_MAX_CODE) {
+            asm_code[asm_pos] = val & 0xFF;
+            asm_code[asm_pos+1] = (val >> 8) & 0xFF;
+        }
+        asm_pos += 2;
+        return;
+    }
+    // EQUB / DCB - emit byte
+    if (strcmp(mnem, "EQUB") == 0 || strcmp(mnem, "DCB") == 0) {
+        int val;
+        if (!parse_imm(&p, &val)) error("ASM: expected value");
+        if (asm_pass == 1 && asm_pos < ASM_MAX_CODE) {
+            asm_code[asm_pos] = val & 0xFF;
+        }
+        asm_pos += 1;
+        return;
+    }
+    // EQUS - emit string bytes
+    if (strcmp(mnem, "EQUS") == 0) {
+        p = skip_ws(p);
+        if (*p != '"') error("ASM: expected string for EQUS");
+        p++;
+        while (*p && *p != '"') {
+            if (asm_pass == 1 && asm_pos < ASM_MAX_CODE)
+                asm_code[asm_pos] = *p;
+            asm_pos++;
+            p++;
+        }
+        if (*p == '"') p++;
+        return;
+    }
+    // ALIGN - align to 4-byte boundary
+    if (strcmp(mnem, "ALIGN") == 0) {
+        while (asm_pos & 3) {
+            if (asm_pass == 1 && asm_pos < ASM_MAX_CODE)
+                asm_code[asm_pos] = 0;
+            asm_pos++;
+        }
         return;
     }
 
