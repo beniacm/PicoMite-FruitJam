@@ -40,6 +40,11 @@ def main():
     time.sleep(0.2)
     ser.read(ser.in_waiting)
 
+    # Stop any running program, close framebuffers, clear variables so
+    # AUTOSAVE's big GetTempMemory call can succeed.
+    for cmd in (b'\x03', b'FRAMEBUFFER CLOSE\r', b'SPRITE CLOSE ALL\r', b'NEW\r'):
+        ser.write(cmd); time.sleep(0.2); ser.read(ser.in_waiting)
+
     # Enter no-echo autosave mode
     ser.write(b'AUTOSAVE N\r')
     time.sleep(0.3)
