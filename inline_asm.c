@@ -1233,20 +1233,46 @@ void cmd_asm(void) {
 // Function to execute assembled code: USR(addr [, arg])
 // Returns the value in R0 after the code runs
 // The code address must have bit 0 set for Thumb mode
+// USR(code%() [, arg [, arg2]])
+// Accepts: USR(code%()) - array name, auto-resolves address
+//          USR(addr%, arg) - raw address (legacy, backwards compatible)
+// R0 = arg (or 0), R1 = arg2 (or 0), returns R0 as integer
 void fun_usr(void) {
-    int64_t addr, arg = 0;
-    getargs(&ep, 3, (unsigned char *)",");
-    addr = getinteger(argv[0]);
-    if (argc >= 3) arg = getinteger(argv[2]);
+    getargs(&ep, 5, (unsigned char *)",");
+    if (argc < 1) error("Syntax");
+
+    int64_t addr;
+    uint32_t arg = 0, arg2 = 0;
+
+    // Check if first arg contains () - array reference
+    char *s = (char *)argv[0];
+    bool is_array = false;
+    int depth = 0;
+    for (char *c = s; *c; c++) {
+        if (*c == '(') depth++;
+        if (*c == ')') { depth--; if (depth == 0 && (c[1] == 0 || c[1] == ' ')) { is_array = true; break; } }
+    }
+
+    if (is_array) {
+        // Array reference: USR(code%() [, arg [, arg2]])
+        int64_t *arrptr = NULL;
+        parseintegerarray(argv[0], &arrptr, 1, 1, NULL, false, NULL);
+        addr = (int64_t)(uintptr_t)arrptr;
+        if (argc >= 3) arg = (uint32_t)getinteger(argv[2]);
+        if (argc >= 5) arg2 = (uint32_t)getinteger(argv[4]);
+    } else {
+        // Raw address: USR(addr [, arg [, arg2]])
+        addr = getinteger(argv[0]);
+        if (argc >= 3) arg = (uint32_t)getinteger(argv[2]);
+        if (argc >= 5) arg2 = (uint32_t)getinteger(argv[4]);
+    }
 
     // Ensure Thumb bit is set
     addr |= 1;
 
-    // Call the function: takes one int32 arg in R0, returns int32 in R0
-    // (assembly code operates on 32-bit ARM registers)
-    typedef uint32_t (*asm_func_t)(uint32_t);
-    asm_func_t func = (asm_func_t)addr;
-    iret = (int64_t)(int32_t)func((uint32_t)arg);  // sign-extend 32-bit result
+    typedef uint32_t (*asm_func2_t)(uint32_t, uint32_t);
+    asm_func2_t func = (asm_func2_t)addr;
+    iret = (int64_t)(int32_t)func(arg, arg2);
     targ = T_INT;
 }
 
