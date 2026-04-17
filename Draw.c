@@ -5397,6 +5397,39 @@ static inline int spriteCharToColorIndex(unsigned char c)
     return -1; // invalid character treated as transparent
 }
 
+static inline int sprite_is_mode5(void)
+{
+#ifdef HDMI
+    return DISPLAY_TYPE == SCREENMODE5;
+#else
+    return 0;
+#endif
+}
+
+static inline int sprite_storage_bytes(int pixels)
+{
+    return sprite_is_mode5() ? pixels : ((pixels + 1) >> 1);
+}
+
+static inline uint8_t sprite_pack_colour(uint32_t rgb)
+{
+    return sprite_is_mode5() ? (uint8_t)RGB332(rgb) : (uint8_t)RGB121(rgb);
+}
+
+static inline int sprite_transparent_limit(void)
+{
+    return sprite_is_mode5() ? 255 : 15;
+}
+
+static inline int sprite_pixel_is_transparent(const unsigned char *data, int pixel_index)
+{
+    if (sprite_is_mode5())
+        return data[pixel_index] == sprite_transparent;
+    if (pixel_index & 1)
+        return ((data[pixel_index >> 1] >> 4) & 0x0F) == sprite_transparent;
+    return (data[pixel_index >> 1] & 0x0F) == sprite_transparent;
+}
+
 // Sprite pool allocator - allocates sprites in chunks of 3 per 256-byte page
 // Returns pointer to allocated sprite structure, or NULL on failure
 static struct spritebuffer *allocSpriteBuff(int bnbr)
@@ -5535,8 +5568,7 @@ void getspritebounds(int bnbr)
     }
     int w = spritebuff[bnbr]->w;
     int h = spritebuff[bnbr]->h;
-    int sprite_transparent2 = sprite_transparent << 4;
-    char *c = (char *)spritebuff[bnbr]->spritebuffptr;
+    unsigned char *c = (unsigned char *)spritebuff[bnbr]->spritebuffptr;
 
     // Free old bounds if they exist (only free boundsleft as others are part of same allocation)
 
@@ -5553,7 +5585,6 @@ void getspritebounds(int bnbr)
         spritebuff[bnbr]->boundstop[x] = SHRT_MAX;
         spritebuff[bnbr]->boundsbottom[x] = -1;
     }
-    int nib = 1;
     for (int y = 0; y < h; ++y)
     {
         int x;
@@ -5561,17 +5592,8 @@ void getspritebounds(int bnbr)
         spritebuff[bnbr]->boundsright[y] = -1;
         for (x = 0; x < w; ++x)
         {
-            nib ^= 1;
-            if (nib)
-            { // odd x upper nipple
-                if ((*c++ & 0xf0) == sprite_transparent2)
-                    continue;
-            }
-            else
-            { // even x lower nipple
-                if ((*c & 0x0f) == sprite_transparent)
-                    continue;
-            }
+            if (sprite_pixel_is_transparent(c, y * w + x))
+                continue;
             if (spritebuff[bnbr]->boundsleft[y] == w)
                 spritebuff[bnbr]->boundsleft[y] = x;
             spritebuff[bnbr]->boundsright[y] = x;
@@ -6020,31 +6042,60 @@ void BlitShowBuffer(int bnbr, int x1, int y1, int mode)
         // we now have the old screen image stored together with the coordinates
         if (rotation)
         {
-            unsigned char *d = GetTempMainMemory(w * h);
-            unsigned char *r = GetTempMainMemory((w * h + 1) >> 1);
-            expandpixel((unsigned char *)sb->spritebuffptr, d, w * h, 0);
-            if (rotation & 1)
-            { // swap left/write
-                for (y = 0; y < h; y++)
-                {
-                    for (x = 0, xx = w - 1; x < (w >> 1); x++, xx--)
-                    {
-                        swap(d[y * w + x], d[y * w + xx]);
-                    }
-                }
-            }
-            if (rotation & 2)
+            if (sprite_is_mode5())
             {
-                for (x = 0; x < w; x++)
-                {
-                    for (y = 0, yy = h - 1; y < (h >> 1); y++, yy--)
+                unsigned char *d = GetTempMainMemory(w * h);
+                memcpy(d, sb->spritebuffptr, w * h);
+                if (rotation & 1)
+                { // swap left/right
+                    for (y = 0; y < h; y++)
                     {
-                        swap(d[x + y * w], d[x + yy * w]);
+                        for (x = 0, xx = w - 1; x < (w >> 1); x++, xx--)
+                        {
+                            swap(d[y * w + x], d[y * w + xx]);
+                        }
                     }
                 }
+                if (rotation & 2)
+                {
+                    for (x = 0; x < w; x++)
+                    {
+                        for (y = 0, yy = h - 1; y < (h >> 1); y++, yy--)
+                        {
+                            swap(d[x + y * w], d[x + yy * w]);
+                        }
+                    }
+                }
+                DrawBufferFast(x1, y1, x1 + w - 1, y1 + h - 1, ((fullmode & 8) == 0 ? 0 : -1), d);
             }
-            contractpixel(d, r, w * h, 0);
-            DrawBufferFast(x1, y1, x1 + w - 1, y1 + h - 1, ((fullmode & 8) == 0 ? 0 : -1), (unsigned char *)r);
+            else
+            {
+                unsigned char *d = GetTempMainMemory(w * h);
+                unsigned char *r = GetTempMainMemory((w * h + 1) >> 1);
+                expandpixel((unsigned char *)sb->spritebuffptr, d, w * h, 0);
+                if (rotation & 1)
+                { // swap left/right
+                    for (y = 0; y < h; y++)
+                    {
+                        for (x = 0, xx = w - 1; x < (w >> 1); x++, xx--)
+                        {
+                            swap(d[y * w + x], d[y * w + xx]);
+                        }
+                    }
+                }
+                if (rotation & 2)
+                {
+                    for (x = 0; x < w; x++)
+                    {
+                        for (y = 0, yy = h - 1; y < (h >> 1); y++, yy--)
+                        {
+                            swap(d[x + y * w], d[x + yy * w]);
+                        }
+                    }
+                }
+                contractpixel(d, r, w * h, 0);
+                DrawBufferFast(x1, y1, x1 + w - 1, y1 + h - 1, ((fullmode & 8) == 0 ? 0 : -1), r);
+            }
         }
         else
         {
@@ -6233,7 +6284,7 @@ void MIPS16 loadsprite(unsigned char *p)
                 if (spritebuff[bnbr]->spritebuffptr == NULL)
                 {
                     // Allocate both buffers in one block to save memory pages
-                    int bufsize = (width * height + 1) >> 1;
+                    int bufsize = sprite_storage_bytes(width * height);
                     char *combined = (char *)GetMemory(bufsize * 2);
                     spritebuff[bnbr]->spritebuffptr = combined;
                     spritebuff[bnbr]->blitstoreptr = combined + bufsize;
@@ -6257,15 +6308,22 @@ void MIPS16 loadsprite(unsigned char *p)
                         data = mode ? sprite_color_mode1[colorIdx] : sprite_color_mode0[colorIdx];
                     else
                         data = 0;
-                    if (toggle)
+                    if (sprite_is_mode5())
                     {
-                        *q++ |= (RGB121(data) << 4);
+                        *q++ = sprite_pack_colour(data);
                     }
                     else
                     {
-                        *q = RGB121(data);
+                        if (toggle)
+                        {
+                            *q++ |= (RGB121(data) << 4);
+                        }
+                        else
+                        {
+                            *q = RGB121(data);
+                        }
+                        toggle = !toggle;
                     }
-                    toggle = !toggle;
                 }
             }
             bnbr++;
@@ -6300,7 +6358,7 @@ void MIPS16 loadarray(unsigned char *p)
         if (size < w * h - 1)
             error((char *)"Array Dimensions");
         // Allocate both buffers in one block to save memory pages
-        int bufsize = (w * h + 1) >> 1;
+        int bufsize = sprite_storage_bytes(w * h);
         char *combined = (char *)GetMemory(bufsize * 2);
         spritebuff[bnbr]->spritebuffptr = combined;
         spritebuff[bnbr]->blitstoreptr = combined + bufsize;
@@ -6313,15 +6371,22 @@ void MIPS16 loadarray(unsigned char *p)
                 c = (int)a3float[i];
             else
                 c = (int)a3int[i];
-            if (toggle)
+            if (sprite_is_mode5())
             {
-                *q++ |= (RGB121(c) << 4);
+                *q++ = (uint8_t)c;
             }
             else
             {
-                *q = RGB121(c);
+                if (toggle)
+                {
+                    *q++ |= (RGB121(c) << 4);
+                }
+                else
+                {
+                    *q = RGB121(c);
+                }
+                toggle = !toggle;
             }
-            toggle = !toggle;
         }
     }
     else
@@ -6880,7 +6945,7 @@ void cmd_sprite(void)
         if (spritebuff[bnbr]->spritebuffptr == NULL)
         {
             // Allocate both sprite buffer and blit store in one block to save memory pages
-            int bufsize = (w * h + 1) >> 1;
+            int bufsize = sprite_storage_bytes(w * h);
             char *combined = (char *)GetMemory(bufsize * 2);
             spritebuff[bnbr]->spritebuffptr = combined;
             spritebuff[bnbr]->blitstoreptr = combined + bufsize;
@@ -6931,7 +6996,7 @@ void cmd_sprite(void)
                 spritebuff[cpy]->spritebuffptr = spritebuff[bnbr]->spritebuffptr;
                 spritebuff[cpy]->w = spritebuff[bnbr]->w;
                 spritebuff[cpy]->h = spritebuff[bnbr]->h;
-                spritebuff[cpy]->blitstoreptr = (char *)GetMemory((spritebuff[cpy]->w * spritebuff[cpy]->h + 1) >> 1);
+                spritebuff[cpy]->blitstoreptr = (char *)GetMemory(sprite_storage_bytes(spritebuff[cpy]->w * spritebuff[cpy]->h));
                 spritebuff[cpy]->x = SPRITE_POS_INACTIVE;
                 spritebuff[cpy]->y = SPRITE_POS_INACTIVE;
                 spritebuff[cpy]->next_x = SPRITE_POS_INACTIVE;
@@ -7154,10 +7219,10 @@ void cmd_sprite(void)
         unsigned char *q = getFstring(argv[2]); // get the file name
         if (argc >= 5 && *argv[4])
         {
-            int targ = getint(argv[4], -15, 15);
+            int targ = getint(argv[4], -sprite_transparent_limit(), sprite_transparent_limit());
             if (targ < 0)
             {
-                remap_colour = -targ; // RGB121 index to substitute for opaque black
+                remap_colour = -targ;
                 transparent = 0;
             }
             else
@@ -7165,7 +7230,8 @@ void cmd_sprite(void)
                 transparent = targ;
             }
         }
-        transparent = RGB121map[transparent];
+        if (!sprite_is_mode5())
+            transparent = RGB121map[transparent];
         if (argc == 7)
             cutoff = getint(argv[6], 1, 254);
         if (strchr((char *)q, '.') == NULL)
@@ -7180,7 +7246,7 @@ void cmd_sprite(void)
             allocSpriteBuff(bnbr);
         // Allocate both buffers in one block to save memory pages
         {
-            int bufsize = (w * h + 4) >> 1;
+            int bufsize = sprite_storage_bytes(w * h);
             char *combined = GetMemory(bufsize * 2);
             spritebuff[bnbr]->spritebuffptr = combined;
             spritebuff[bnbr]->blitstoreptr = combined + bufsize;
@@ -7202,44 +7268,67 @@ void cmd_sprite(void)
         unsigned char *rr;
         routinechecks();
         rr = (unsigned char *)upng_get_buffer(upng);
-        unsigned char *pp = rr;
-        char d[3];
         int i = w * h;
-        while (i--)
+        if (sprite_is_mode5())
         {
-            d[0] = rr[2];
-            d[1] = rr[1];
-            d[2] = rr[0];
-            if (rr[3] > cutoff)
+            while (i--)
             {
-                pp[0] = d[0];
-                pp[1] = d[1];
-                pp[2] = d[2];
-            }
-            else
-            {
-                pp[0] = (transparent & 0xFF0000) >> 16;
-                pp[1] = (transparent & 0xFF00) >> 8;
-                pp[2] = (transparent & 0xFF);
-            }
-            {
-                uint8_t c4;
-                if (DISPLAY_TYPE == SCREENMODE1)
-                    c4 = (((uint16_t)pp[2] + (uint16_t)pp[1] + (uint16_t)pp[0]) < 0x180) ? 0 : 0xF;
+                uint8_t pixel;
+                if (rr[3] > cutoff)
+                {
+                    if (remap_colour >= 0 && rr[0] == 0 && rr[1] == 0 && rr[2] == 0)
+                        pixel = (uint8_t)remap_colour;
+                    else
+                        pixel = (uint8_t)RGB332(((uint32_t)rr[0] << 16) | ((uint32_t)rr[1] << 8) | rr[2]);
+                }
                 else
-                    c4 = ((pp[2] & 0x80) >> 4) | ((pp[1] & 0xC0) >> 5) | ((pp[0] & 0x80) >> 7);
-                if (remap_colour >= 0 && c4 == 0 && rr[3] > cutoff)
-                    c4 = (uint8_t)remap_colour;
+                {
+                    pixel = (uint8_t)transparent;
+                }
+                *t++ = pixel;
+                rr += 4;
+            }
+        }
+        else
+        {
+            unsigned char *pp = rr;
+            char d[3];
+            while (i--)
+            {
+                d[0] = rr[2];
+                d[1] = rr[1];
+                d[2] = rr[0];
+                if (rr[3] > cutoff)
+                {
+                    pp[0] = d[0];
+                    pp[1] = d[1];
+                    pp[2] = d[2];
+                }
+                else
+                {
+                    pp[0] = (transparent & 0xFF0000) >> 16;
+                    pp[1] = (transparent & 0xFF00) >> 8;
+                    pp[2] = (transparent & 0xFF);
+                }
+                {
+                    uint8_t c4;
+                    if (DISPLAY_TYPE == SCREENMODE1)
+                        c4 = (((uint16_t)pp[2] + (uint16_t)pp[1] + (uint16_t)pp[0]) < 0x180) ? 0 : 0xF;
+                    else
+                        c4 = ((pp[2] & 0x80) >> 4) | ((pp[1] & 0xC0) >> 5) | ((pp[0] & 0x80) >> 7);
+                    if (remap_colour >= 0 && c4 == 0 && rr[3] > cutoff)
+                        c4 = (uint8_t)remap_colour;
+                    if (toggle)
+                        *t |= (c4 << 4);
+                    else
+                        *t = c4;
+                }
                 if (toggle)
-                    *t |= (c4 << 4);
-                else
-                    *t = c4;
+                    t++;
+                toggle = !toggle;
+                pp += 3;
+                rr += 4;
             }
-            if (toggle)
-                t++;
-            toggle = !toggle;
-            pp += 3;
-            rr += 4;
         }
         upng_free(upng);
         return;
@@ -7295,7 +7384,7 @@ void cmd_sprite(void)
             allocSpriteBuff(bnbr);
         // Allocate both buffers in one block to save memory pages
         {
-            int bufsize = (state.width * state.height + 4) >> 1;
+            int bufsize = sprite_storage_bytes(state.width * state.height);
             char *combined = GetMemory(bufsize * 2);
             spritebuff[bnbr]->spritebuffptr = combined;
             spritebuff[bnbr]->blitstoreptr = combined + bufsize;
@@ -7308,34 +7397,45 @@ void cmd_sprite(void)
         char *t = spritebuff[bnbr]->spritebuffptr;
         int i = state.width * state.height;
         unsigned char *q = state.output_buffer;
-        while (i--)
+        if (sprite_is_mode5())
         {
-            if (DISPLAY_TYPE == SCREENMODE1)
+            while (i--)
             {
-                if (toggle)
+                *t++ = (char)RGB332(((uint32_t)q[2] << 16) | ((uint32_t)q[1] << 8) | q[0]);
+                q += 3;
+            }
+        }
+        else
+        {
+            while (i--)
+            {
+                if (DISPLAY_TYPE == SCREENMODE1)
                 {
-                    *t |= (char)(((uint16_t)q[2] + (uint16_t)q[1] + (uint16_t)q[0]) < 0x180 ? 0 : 0xF0);
+                    if (toggle)
+                    {
+                        *t |= (char)(((uint16_t)q[2] + (uint16_t)q[1] + (uint16_t)q[0]) < 0x180 ? 0 : 0xF0);
+                    }
+                    else
+                    {
+                        *t = (char)(((uint16_t)q[2] + (uint16_t)q[1] + (uint16_t)q[0]) < 0x180 ? 0 : 0xF);
+                    }
                 }
                 else
                 {
-                    *t = (char)(((uint16_t)q[2] + (uint16_t)q[1] + (uint16_t)q[0]) < 0x180 ? 0 : 0xF);
+                    if (toggle)
+                    {
+                        *t |= ((q[2] & 0x80)) | ((q[1] & 0xC0) >> 1) | ((q[0] & 0x80) >> 3);
+                    }
+                    else
+                    {
+                        *t = ((q[2] & 0x80) >> 4) | ((q[1] & 0xC0) >> 5) | ((q[0] & 0x80) >> 7);
+                    }
                 }
-            }
-            else
-            {
                 if (toggle)
-                {
-                    *t |= ((q[2] & 0x80)) | ((q[1] & 0xC0) >> 1) | ((q[0] & 0x80) >> 3);
-                }
-                else
-                {
-                    *t = ((q[2] & 0x80) >> 4) | ((q[1] & 0xC0) >> 5) | ((q[0] & 0x80) >> 7);
-                }
+                    t++;
+                toggle = !toggle;
+                q += 3;
             }
-            if (toggle)
-                t++;
-            toggle = !toggle;
-            q += 3;
         }
         return;
     }
@@ -7513,7 +7613,7 @@ void cmd_sprite(void)
 
     else if ((p = checkstring(cmdline, (unsigned char *)"SET TRANSPARENT")))
     {
-        sprite_transparent = getint((unsigned char *)p, 0, 15);
+        sprite_transparent = getint((unsigned char *)p, 0, sprite_transparent_limit());
     }
     else
         SyntaxError();
@@ -7783,10 +7883,9 @@ void fun_sprite(void)
                 if (sp->boundsleft == NULL)
                     getspritebounds(bnbr);
 
-                int sprite_transparent2 = sprite_transparent << 4;
                 int sh = sp->h;
                 int sw = sp->w;
-                int rowbytes = (sw + 1) >> 1; // bytes per row in packed 4-bit format
+                int rowbytes = sprite_is_mode5() ? sw : ((sw + 1) >> 1);
 
                 // Cache backgroundcollision array pointer
                 short *bgc = sp->backgroundcollision;
@@ -7801,7 +7900,7 @@ void fun_sprite(void)
                 bgc[6] = -1;       // top offset
                 bgc[7] = -1;       // bottom offset
 
-                char *bstore = sp->blitstoreptr;
+                unsigned char *bstore = (unsigned char *)sp->blitstoreptr;
                 if (!bstore)
                     error((char *)"Buffers are empty");
 
@@ -7820,23 +7919,13 @@ void fun_sprite(void)
                 // Scan all pixels in the background store
                 for (int py = 0; py < sh; ++py)
                 {
-                    char *rowptr = bstore + py * rowbytes;
+                    unsigned char *rowptr = bstore + py * rowbytes;
 
                     for (int px = 0; px < sw; ++px)
                     {
                         // Check if background pixel at (px, py) is non-transparent
-                        int bytepos = px >> 1;
-                        int is_transparent;
-                        if (px & 1)
-                        {
-                            // Odd x - upper nibble
-                            is_transparent = ((rowptr[bytepos] & 0xf0) == sprite_transparent2);
-                        }
-                        else
-                        {
-                            // Even x - lower nibble
-                            is_transparent = ((rowptr[bytepos] & 0x0f) == sprite_transparent);
-                        }
+                        int is_transparent = sprite_is_mode5() ? (rowptr[px] == sprite_transparent)
+                                                               : (((px & 1) ? ((rowptr[px >> 1] >> 4) & 0x0F) : (rowptr[px >> 1] & 0x0F)) == sprite_transparent);
 
                         if (is_transparent)
                             continue;
@@ -11142,17 +11231,21 @@ void cmd_map(void)
     }
     else
     {
-        // Parse "n = RGB(...)" - find '=' first to isolate the index
+        // Parse "n = RGB(...)" - find '=' first to isolate the index.
+        // cmdline may live in flash ProgMemory when invoked from a stored
+        // program, so in-place null-termination is unsafe — copy to RAM.
         unsigned char *eq = cmdline;
         while (*eq && tokenfunction(*eq) != op_equal)
             eq++;
         if (!*eq)
             SyntaxError();
-        // Temporarily terminate at '=' to parse index without comparison
-        unsigned char save = *eq;
-        *eq = 0;
-        int cl = getint(cmdline, 0, 255);
-        *eq = save;
+        size_t idxlen = (size_t)(eq - cmdline);
+        unsigned char idxbuf[64];
+        if (idxlen >= sizeof(idxbuf))
+            SyntaxError();
+        memcpy(idxbuf, cmdline, idxlen);
+        idxbuf[idxlen] = 0;
+        int cl = getint(idxbuf, 0, 255);
         if (DISPLAY_TYPE != SCREENMODE5 && cl > 15)
             error("Mode supports 16 colours (0-15)");
         cmdline = eq + 1;

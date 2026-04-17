@@ -1417,4 +1417,195 @@ void fun_usr(void) {
     targ = T_INT;
 }
 
+// FRAMEDUMP - composite HDMI frame in RAM then transmit via XMODEM-CRC over CDC.
+// Uses direct tud_cdc_* I/O so it works even though XModem.c's _outbyte is a no-op
+// on USBKEYBOARD builds (SerialConsolePutC skips CDC, and main-loop tud_task() is
+// not running during this blocking command).
+//
+// Blob layout (fixed, little-endian):
+//   0..3   magic "FJFD"
+//   4      mode (4 or 5)
+//   5      bpp  (1 or 2)
+//   6..7   width
+//   8..9   height
+//   10..13 total_blob_size (hdr+pal+pixels)
+//   14     transparent
+//   15     transparents
+//   16..31 reserved/zero
+//   32..543 (mode 5 only) palette: 256 x uint16 RGB555 LE
+//   <pixels> raw composited bytes (width*height*bpp)
+
+#include "tusb.h"
+
+static void fd_pump(void) {
+    tuh_task();
+    tud_task();
+}
+
+static int fd_getc_timeout(uint32_t timeout_us) {
+    uint64_t deadline = time_us_64() + timeout_us;
+    uint8_t b;
+    while (time_us_64() < deadline) {
+        fd_pump();
+        if (tud_cdc_available() && tud_cdc_read(&b, 1) == 1) return b;
+    }
+    return -1;
+}
+
+static void fd_write(const uint8_t *buf, int n) {
+    int off = 0;
+    uint64_t deadline = time_us_64() + 2000000;
+    while (off < n) {
+        fd_pump();
+        uint32_t avail = tud_cdc_write_available();
+        if (avail == 0) {
+            tud_cdc_write_flush();
+            if (time_us_64() > deadline) return; // give up
+            continue;
+        }
+        uint32_t chunk = n - off;
+        if (chunk > avail) chunk = avail;
+        tud_cdc_write(buf + off, chunk);
+        off += chunk;
+        deadline = time_us_64() + 2000000;
+    }
+    tud_cdc_write_flush();
+}
+
+static void fd_putc(uint8_t c) { fd_write(&c, 1); }
+
+static uint16_t fd_crc16_ccitt(const uint8_t *buf, int len) {
+    uint16_t crc = 0;
+    for (int i = 0; i < len; i++) {
+        crc ^= ((uint16_t)buf[i]) << 8;
+        for (int j = 0; j < 8; j++) {
+            crc = (crc & 0x8000) ? (crc << 1) ^ 0x1021 : (crc << 1);
+        }
+    }
+    return crc;
+}
+
+#define FD_SOH 0x01
+#define FD_EOT 0x04
+#define FD_ACK 0x06
+#define FD_NAK 0x15
+#define FD_CAN 0x18
+#define FD_CRCREQ 'C'
+#define FD_PKT 128
+
+// Transmit buf[0..len) as XMODEM-CRC. Returns 0 on success, -1 on failure.
+static int fd_xmodem_send(const uint8_t *buf, int len) {
+    // Wait for receiver's initial 'C' (CRC mode) or NAK (checksum mode).
+    int use_crc = 1;
+    int c = -1;
+    for (int attempt = 0; attempt < 60; attempt++) {
+        c = fd_getc_timeout(1000000);
+        if (c == FD_CRCREQ) { use_crc = 1; break; }
+        if (c == FD_NAK)    { use_crc = 0; break; }
+        if (c == FD_CAN)    return -1;
+    }
+    if (c != FD_CRCREQ && c != FD_NAK) return -1;
+
+    int pkt = 1;
+    int off = 0;
+    while (off < len) {
+        uint8_t data[FD_PKT];
+        int n = len - off;
+        if (n > FD_PKT) n = FD_PKT;
+        memcpy(data, buf + off, n);
+        if (n < FD_PKT) memset(data + n, 0x1A, FD_PKT - n); // XMODEM pad = SUB (0x1A)
+
+        for (int retry = 0; retry < 10; retry++) {
+            uint8_t hdr[3] = { FD_SOH, (uint8_t)pkt, (uint8_t)(~pkt) };
+            fd_write(hdr, 3);
+            fd_write(data, FD_PKT);
+            if (use_crc) {
+                uint16_t crc = fd_crc16_ccitt(data, FD_PKT);
+                uint8_t cb[2] = { (uint8_t)(crc >> 8), (uint8_t)(crc & 0xFF) };
+                fd_write(cb, 2);
+            } else {
+                uint8_t sum = 0;
+                for (int i = 0; i < FD_PKT; i++) sum += data[i];
+                fd_write(&sum, 1);
+            }
+            int r = fd_getc_timeout(2000000);
+            if (r == FD_ACK) break;
+            if (r == FD_CAN) return -1;
+            if (retry == 9) return -1;
+        }
+        pkt = (pkt + 1) & 0xFF;
+        off += FD_PKT;
+    }
+
+    // EOT handshake
+    for (int retry = 0; retry < 10; retry++) {
+        fd_putc(FD_EOT);
+        int r = fd_getc_timeout(2000000);
+        if (r == FD_ACK) return 0;
+    }
+    return -1;
+}
+
+void cmd_framedump(void) {
+    int w = HRes, h = VRes, mode = DISPLAY_TYPE;
+    int bpp = (mode == SCREENMODE4) ? 2 : 1;
+
+    if (mode != SCREENMODE4 && mode != SCREENMODE5) {
+        error("FRAMEDUMP only supports MODE 4 or 5");
+        return;
+    }
+    if (!DisplayBuf || !LayerBuf || !SecondLayer) {
+        error("No display buffer");
+        return;
+    }
+
+    int pix_bytes = w * h * bpp;
+    int pal_bytes = (mode == SCREENMODE5) ? 512 : 0;
+    int hdr_bytes = 32;
+    int total = hdr_bytes + pal_bytes + pix_bytes;
+
+    // Single contiguous blob: header + palette + composited pixels.
+    uint8_t *blob = GetTempMemory(total);
+    memset(blob, 0, hdr_bytes);
+    memcpy(blob, "FJFD", 4);
+    blob[4] = (uint8_t)mode;
+    blob[5] = (uint8_t)bpp;
+    blob[6] = w & 0xFF; blob[7] = (w >> 8) & 0xFF;
+    blob[8] = h & 0xFF; blob[9] = (h >> 8) & 0xFF;
+    blob[10] = total & 0xFF;
+    blob[11] = (total >> 8) & 0xFF;
+    blob[12] = (total >> 16) & 0xFF;
+    blob[13] = (total >> 24) & 0xFF;
+    blob[14] = (uint8_t)transparent;
+    blob[15] = (uint8_t)transparents;
+
+    uint8_t *pal_dst = blob + hdr_bytes;
+    uint8_t *pix_dst = blob + hdr_bytes + pal_bytes;
+
+    if (mode == SCREENMODE5) {
+        if (map256) memcpy(pal_dst, map256, 512);
+        uint8_t ts = (uint8_t)transparents;
+        uint8_t tl = (uint8_t)transparent;
+        for (int i = 0; i < pix_bytes; i++) {
+            uint8_t s = SecondLayer[i], l = LayerBuf[i], d = DisplayBuf[i];
+            pix_dst[i] = (s != ts) ? s : (l != tl) ? l : d;
+        }
+    } else {
+        uint16_t rts = (uint16_t)RGBtransparent;
+        for (int i = 0; i < pix_bytes; i += 2) {
+            uint16_t s = *(uint16_t *)(SecondLayer + i);
+            uint16_t l = *(uint16_t *)(LayerBuf + i);
+            uint16_t d = *(uint16_t *)(DisplayBuf + i);
+            uint16_t o = (s != rts) ? s : (l != rts) ? l : d;
+            pix_dst[i] = o & 0xFF;
+            pix_dst[i + 1] = (o >> 8) & 0xFF;
+        }
+    }
+
+    // Announce so host knows to start XMODEM receive, then wait.
+    MMPrintString("FJFD READY\r\n");
+    int rc = fd_xmodem_send(blob, total);
+    MMPrintString(rc == 0 ? "\r\nFJFD OK\r\n" : "\r\nFJFD FAIL\r\n");
+}
+
 #endif // ADAFRUIT_FRUIT_JAM

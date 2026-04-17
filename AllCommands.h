@@ -253,6 +253,7 @@ void cmd_web(void);
 #if defined(ADAFRUIT_FRUIT_JAM)
 void cmd_asm(void);
 void fun_usr(void);
+void cmd_framedump(void);
 #endif
 
 #ifdef rp2350
@@ -602,6 +603,7 @@ void fun_frame(void);
 	{(unsigned char *)"WEB", T_CMD, 0, cmd_web},
 #ifdef ADAFRUIT_FRUIT_JAM
 	{(unsigned char *)"ASM", T_CMD, 0, cmd_asm},
+	{(unsigned char *)"FrameDump", T_CMD, 0, cmd_framedump},
 #endif
 #else
 	{(unsigned char *)"Draw3D", T_CMD, 0, cmd_3D},
