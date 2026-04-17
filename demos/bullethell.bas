@@ -1,17 +1,16 @@
 MODE 5
-' Set palette via direct POKE (MAP n= has off-by-one bug)
-rp% = &H2007e5b6
-POKE SHORT rp%, 0
-POKE SHORT rp%+2, &H7C00
-POKE SHORT rp%+4, &H03E0
-POKE SHORT rp%+6, &H7FE0
-POKE SHORT rp%+8, &H001F
-POKE SHORT rp%+10, &H7FFF
-POKE SHORT rp%+12, &H7C1F
-POKE SHORT rp%+14, &H03FF
+' Set palette using fixed MAP command
+MAP 0 = RGB(0,0,16)
+MAP 1 = RGB(255,0,0)
+MAP 2 = RGB(255,128,0)
+MAP 3 = RGB(255,255,0)
+MAP 4 = RGB(0,255,0)
+MAP 5 = RGB(255,255,255)
+MAP 6 = RGB(0,255,255)
+MAP 7 = RGB(255,0,255)
 MAP SET
-CLS RGB(0,0,0)
 FRAMEBUFFER CREATE
+CLS RGB(0,0,0)
 DIM INTEGER blt%(50)
 ASM blt%()
   PUSH {R4, R5, R6, R7, LR}
@@ -83,7 +82,7 @@ cl:
   STRB R1, [R0]
   POP {PC}
 END ASM
-' 8x8 sprite
+' 8x8 sprite: white/yellow/red circle
 DIM INTEGER sdata%(8)
 sa% = PEEK(VARADDR sdata%())
 POKE BYTE sa%, 8 : POKE BYTE sa%+1, 8
@@ -96,12 +95,12 @@ For i=0 To 7:For j=0 To 7
   End If
   POKE BYTE sa%+2+i*8+j, c%
 Next j,i
-' 4x4 bullet
+' 4x4 bullet: cyan
 DIM INTEGER bdata%(4)
 ba% = PEEK(VARADDR bdata%())
 POKE BYTE ba%, 4:POKE BYTE ba%+1, 4
 For i=0 To 3:For j=0 To 3
-  If Sqr((i-1.5)^2+(j-1.5)^2)<1.8 Then POKE BYTE ba%+2+i*4+j, 7 Else POKE BYTE ba%+2+i*4+j, 0
+  If Sqr((i-1.5)^2+(j-1.5)^2)<1.8 Then POKE BYTE ba%+2+i*4+j, 6 Else POKE BYTE ba%+2+i*4+j, 0
 Next j,i
 n% = 40
 DIM x(n%-1),y(n%-1),dx(n%-1),dy(n%-1)
