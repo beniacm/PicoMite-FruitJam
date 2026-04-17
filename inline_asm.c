@@ -1284,21 +1284,10 @@ void cmd_asm(void) {
     MMPrintString(msg);
 }
 
-// Function to execute assembled code: USR(addr [, arg])
-// Returns the value in R0 after the code runs
-// The code address must have bit 0 set for Thumb mode
-// USR(code%() [, arg [, arg2]])
-// Accepts: USR(code%()) - array name, auto-resolves address
-//          USR(addr%, arg) - raw address (legacy, backwards compatible)
-// R0 = arg (or 0), R1 = arg2 (or 0), returns R0 as integer
-void fun_usr(void) {
-    getargs(&ep, 5, (unsigned char *)",");
-    if (argc < 1) error("Syntax");
-
-    int64_t addr;
-    uint32_t arg = 0, arg2 = 0;
-
-    // Check if first arg contains () - array reference
+// Helper: resolve ASM code address and args from command/function arguments
+static void resolve_asm_call(unsigned char **argv, int argc,
+                              uint32_t *addr, uint32_t *arg, uint32_t *arg2) {
+    *arg = 0; *arg2 = 0;
     char *s = (char *)argv[0];
     bool is_array = false;
     int depth = 0;
@@ -1306,27 +1295,35 @@ void fun_usr(void) {
         if (*c == '(') depth++;
         if (*c == ')') { depth--; if (depth == 0 && (c[1] == 0 || c[1] == ' ')) { is_array = true; break; } }
     }
-
     if (is_array) {
-        // Array reference: USR(code%() [, arg [, arg2]])
         int64_t *arrptr = NULL;
         parseintegerarray(argv[0], &arrptr, 1, 1, NULL, false, NULL);
-        addr = (int64_t)(uintptr_t)arrptr;
-        if (argc >= 3) arg = (uint32_t)getinteger(argv[2]);
-        if (argc >= 5) arg2 = (uint32_t)getinteger(argv[4]);
+        *addr = (uint32_t)(uintptr_t)arrptr | 1; // Thumb bit
     } else {
-        // Raw address: USR(addr [, arg [, arg2]])
-        addr = getinteger(argv[0]);
-        if (argc >= 3) arg = (uint32_t)getinteger(argv[2]);
-        if (argc >= 5) arg2 = (uint32_t)getinteger(argv[4]);
+        *addr = (uint32_t)getinteger(argv[0]) | 1;
     }
+    if (argc >= 3) *arg = (uint32_t)getinteger(argv[2]);
+    if (argc >= 5) *arg2 = (uint32_t)getinteger(argv[4]);
+}
 
-    // Ensure Thumb bit is set
-    addr |= 1;
-
+// CALL code%() [, arg1 [, arg2]]  - call ASM code, discard return value
+void cmd_callasm(void) {
+    getargs(&cmdline, 5, (unsigned char *)",");
+    if (argc < 1) error("Syntax");
+    uint32_t addr, arg, arg2;
+    resolve_asm_call(argv, argc, &addr, &arg, &arg2);
     typedef uint32_t (*asm_func2_t)(uint32_t, uint32_t);
-    asm_func2_t func = (asm_func2_t)addr;
-    iret = (int64_t)(int32_t)func(arg, arg2);
+    ((asm_func2_t)addr)(arg, arg2);
+}
+
+// USR(code%() [, arg [, arg2]]) - call ASM code, return R0 as integer
+void fun_usr(void) {
+    getargs(&ep, 5, (unsigned char *)",");
+    if (argc < 1) error("Syntax");
+    uint32_t addr, arg, arg2;
+    resolve_asm_call(argv, argc, &addr, &arg, &arg2);
+    typedef uint32_t (*asm_func2_t)(uint32_t, uint32_t);
+    iret = (int64_t)(int32_t)((asm_func2_t)addr)(arg, arg2);
     targ = T_INT;
 }
 

@@ -6013,6 +6013,20 @@ search_again:
 
 void cmd_call(void)
 {
+#if defined(ADAFRUIT_FRUIT_JAM)
+	// Check if first arg is an integer array (ASM code)
+	{
+		char *s = (char *)cmdline;
+		while (*s == ' ') s++;
+		char *paren = strchr(s, '(');
+		if (paren && paren[1] == ')') {
+			// Looks like an array reference - try ASM call
+			extern void cmd_callasm(void);
+			cmd_callasm();
+			return;
+		}
+	}
+#endif
 	int i;
 	unsigned char *p = getCstring(cmdline); // get the command we want to call
 	unsigned char *q = skipexpression(cmdline);
