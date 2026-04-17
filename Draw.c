@@ -11142,14 +11142,20 @@ void cmd_map(void)
     }
     else
     {
+        // Parse "n = RGB(...)" - find '=' first to isolate the index
+        unsigned char *eq = cmdline;
+        while (*eq && tokenfunction(*eq) != op_equal)
+            eq++;
+        if (!*eq)
+            SyntaxError();
+        // Temporarily terminate at '=' to parse index without comparison
+        unsigned char save = *eq;
+        *eq = 0;
         int cl = getint(cmdline, 0, 255);
+        *eq = save;
         if (DISPLAY_TYPE != SCREENMODE5 && cl > 15)
             error("Mode supports 16 colours (0-15)");
-        while (*cmdline && tokenfunction(*cmdline) != op_equal)
-            cmdline++;
-        if (!*cmdline)
-            SyntaxError();
-        ++cmdline;
+        cmdline = eq + 1;
         if (!*cmdline)
             SyntaxError();
         int col = getColour((char *)cmdline, 0);
