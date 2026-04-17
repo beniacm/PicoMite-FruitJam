@@ -24,7 +24,7 @@ FOR f=1 TO 2000
   x(i)=x(i)+dx(i) : y(i)=y(i)+dy(i)
   SPRITE WRITE 1, INT(x(i)), INT(y(i))
  NEXT i
- FRAMEBUFFER COPY F, N, B
+ FRAMEBUFFER FLIP
 NEXT f
 PAUSE 60000
 FRAMEBUFFER CLOSE

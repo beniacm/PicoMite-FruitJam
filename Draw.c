@@ -14050,6 +14050,13 @@ void MIPS16 fun_3D(void)
 #ifdef PICOMITEVGA
 void closeframebuffer(char layer)
 {
+#ifdef HDMI
+    // If FRAMEBUFFER FLIP has left DisplayBuf/FrameBuf swapped, restore
+    // the original layout so the subsequent FreeMemory(FrameBuf) frees
+    // the heap allocation rather than the original video memory.
+    if (layer == 'A' || layer == 'F')
+        framebuf_unflip_if_needed();
+#endif
     if (layer == 'A')
         WriteBuf = DisplayBuf;
     if (FrameBuf != DisplayBuf && (layer == 'A' || layer == 'F'))
@@ -14169,6 +14176,24 @@ void closeframebuffer(char layer)
     transparent = 0;
 }
 /*  @endcond */
+
+#ifdef HDMI
+// Parity of FRAMEBUFFER FLIP swaps. 1 means DisplayBuf/FrameBuf are
+// currently swapped relative to their created state; closeframebuffer
+// must undo it before FreeMemory(FrameBuf) runs on the original
+// video memory instead of the heap allocation.
+static int framebuf_flipped = 0;
+void framebuf_unflip_if_needed(void)
+{
+    if (framebuf_flipped)
+    {
+        unsigned char *tmp = (unsigned char *)DisplayBuf;
+        DisplayBuf = FrameBuf;
+        FrameBuf = tmp;
+        framebuf_flipped = 0;
+    }
+}
+#endif
 
 void cmd_framebuffer(void)
 {
@@ -14556,6 +14581,34 @@ void cmd_framebuffer(void)
         else
             error("Buffer not created");
     }
+#ifdef HDMI
+    else if ((p = checkstring(cmdline, (unsigned char *)"FLIP")))
+    {
+        // O(1) page flip — swaps DisplayBuf ⇄ FrameBuf during VBLANK.
+        // Replaces the 76KB memcpy FRAMEBUFFER COPY F,N,B does for
+        // MODE 5. WriteBuf is repointed at the new back buffer so the
+        // caller can keep drawing without issuing FRAMEBUFFER WRITE F
+        // every frame (still legal to do so).
+        //
+        // framebuf_flipped tracks parity so closeframebuffer can undo
+        // an odd number of flips before calling FreeMemory(FrameBuf)
+        // — otherwise we'd be freeing the original video memory.
+        if (FrameBuf == DisplayBuf)
+            error("Framebuffer not created");
+        if (!(DISPLAY_TYPE == SCREENMODE1 || DISPLAY_TYPE == SCREENMODE2 ||
+              DISPLAY_TYPE == SCREENMODE3 || DISPLAY_TYPE == SCREENMODE4 ||
+              DISPLAY_TYPE == SCREENMODE5))
+            error("Mode not supported");
+        while (v_scanline != 0)
+        {
+        }
+        unsigned char *tmp = (unsigned char *)DisplayBuf;
+        DisplayBuf = FrameBuf;
+        FrameBuf = tmp;
+        WriteBuf = FrameBuf; // back buffer after the swap
+        framebuf_flipped ^= 1;
+    }
+#endif
     else
         SyntaxError();
     ;
