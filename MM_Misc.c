@@ -7502,6 +7502,12 @@ void MIPS16 fun_info(void)
         targ = T_STR;
         return;
     }
+    else if (checkstring(ep, (unsigned char *)"WRITEBUF"))
+    {
+        iret = (int64_t)(uintptr_t)WriteBuf;
+        targ = T_INT;
+        return;
+    }
 #endif
 #endif
     else if (checkstring(ep, (unsigned char *)"LINE"))

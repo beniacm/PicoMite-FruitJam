@@ -461,7 +461,17 @@ static void asm_line(char *line) {
                                     asm_emit16(0x1C00 | (imm3 << 6) | (rs << 3) | rd);
                                 else
                                     asm_emit16(0x1E00 | (imm3 << 6) | (rs << 3) | rd);
-                            } else error("ASM: 3-operand ADD/SUB immediate out of range");
+                            } else if (rd == rs && rd <= 7 && imm3 >= 0 && imm3 <= 255) {
+                                // Fallback: ADD/SUB Rd, #imm8 (2-operand)
+                                if (mnem[0] == 'A')
+                                    asm_emit16(0x3000 | (rd << 8) | (imm3 & 0xFF));
+                                else
+                                    asm_emit16(0x3800 | (rd << 8) | (imm3 & 0xFF));
+                            } else {
+                                char msg[80];
+                                snprintf(msg, sizeof(msg), "ASM: ADD/SUB imm out of range (rd=%d rs=%d imm=%d)", rd, rs, imm3);
+                                error(msg);
+                            }
                             goto alu_done;
                         }
                         int rn = parse_reg(&saved);
@@ -643,11 +653,21 @@ static void asm_line(char *line) {
         if (*p != '[') error("ASM: expected '['"); p++;
         int rb = parse_reg(&p);
         p = skip_ws(p);
-        int off = 0;
-        if (*p == ',') { p++; parse_imm(&p, &off); }
-        p = skip_ws(p);
-        if (*p != ']') error("ASM: expected ']'"); p++;
-        asm_emit16(0x8000 | (((off >> 1) & 0x1F) << 6) | (rb << 3) | rd);
+        if (*p == ']') {
+            p++;
+            asm_emit16(0x8000 | (rb << 3) | rd);
+        } else if (*p == ',') {
+            p++;
+            int imm;
+            if (parse_imm(&p, &imm)) {
+                p = skip_ws(p); if (*p != ']') error("ASM: expected ']'"); p++;
+                asm_emit16(0x8000 | (((imm >> 1) & 0x1F) << 6) | (rb << 3) | rd);
+            } else {
+                int ro = parse_reg(&p);
+                p = skip_ws(p); if (*p != ']') error("ASM: expected ']'"); p++;
+                asm_emit16(0x5200 | (ro << 6) | (rb << 3) | rd);
+            }
+        }
         return;
     }
 
