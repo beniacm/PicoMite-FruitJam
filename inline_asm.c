@@ -108,6 +108,20 @@ static int parse_reg(char **pp) {
     return reg;
 }
 
+// Parse VFP single-precision register: S0-S31
+static int parse_sreg(char **pp) {
+    char *p = skip_ws(*pp);
+    if ((*p == 'S' || *p == 's') && isdigit(p[1])) {
+        int reg = atoi(p + 1);
+        p += 2;
+        if (reg >= 10) p++;
+        if (reg > 31) return -1;
+        *pp = p;
+        return reg;
+    }
+    return -1;
+}
+
 // Parse immediate: #decimal or #0xhex
 static int parse_imm(char **pp, int *val) {
     char *p = skip_ws(*pp);
@@ -654,6 +668,305 @@ static void asm_line(char *line) {
             asm_code[asm_pos+3] = (val >> 24) & 0xFF;
         }
         asm_pos += 4;
+        return;
+    }
+
+    // ============================================================================
+    // VFP/FPU Instructions (Cortex-M33 single-precision)
+    // ============================================================================
+
+    // Helper: encode Sd (destination single reg) into VFP instruction
+    // Sd is encoded as D:Vd where D=Sd[0], Vd=Sd[4:1]
+    #define VFP_SD(sd) ((((sd) >> 1) << 12) | (((sd) & 1) << 22))
+    #define VFP_SN(sn) ((((sn) >> 1) << 16) | (((sn) & 1) << 7))
+    #define VFP_SM(sm) ((((sm) >> 1) << 0)  | (((sm) & 1) << 5))
+
+    // ---- VADD.F32 Sd, Sn, Sm ----
+    if (strcmp(mnem, "VADD") == 0 || strcmp(mnem, "VADDF32") == 0) {
+        // Skip optional .F32 suffix
+        if (*p == '.') { while (*p && *p != ' ' && *p != '\t') p++; }
+        int sd = parse_sreg(&p); expect_comma(&p);
+        int sn = parse_sreg(&p); expect_comma(&p);
+        int sm = parse_sreg(&p);
+        if (sd < 0 || sn < 0 || sm < 0) error("ASM: bad register for VADD.F32");
+        asm_emit32(0xEE300A00 | VFP_SD(sd) | VFP_SN(sn) | VFP_SM(sm));
+        return;
+    }
+
+    // ---- VSUB.F32 Sd, Sn, Sm ----
+    if (strcmp(mnem, "VSUB") == 0 || strcmp(mnem, "VSUBF32") == 0) {
+        if (*p == '.') { while (*p && *p != ' ' && *p != '\t') p++; }
+        int sd = parse_sreg(&p); expect_comma(&p);
+        int sn = parse_sreg(&p); expect_comma(&p);
+        int sm = parse_sreg(&p);
+        if (sd < 0 || sn < 0 || sm < 0) error("ASM: bad register for VSUB.F32");
+        asm_emit32(0xEE300A40 | VFP_SD(sd) | VFP_SN(sn) | VFP_SM(sm));
+        return;
+    }
+
+    // ---- VMUL.F32 Sd, Sn, Sm ----
+    if (strcmp(mnem, "VMUL") == 0 || strcmp(mnem, "VMULF32") == 0) {
+        if (*p == '.') { while (*p && *p != ' ' && *p != '\t') p++; }
+        int sd = parse_sreg(&p); expect_comma(&p);
+        int sn = parse_sreg(&p); expect_comma(&p);
+        int sm = parse_sreg(&p);
+        if (sd < 0 || sn < 0 || sm < 0) error("ASM: bad register for VMUL.F32");
+        asm_emit32(0xEE200A00 | VFP_SD(sd) | VFP_SN(sn) | VFP_SM(sm));
+        return;
+    }
+
+    // ---- VDIV.F32 Sd, Sn, Sm ----
+    if (strcmp(mnem, "VDIV") == 0 || strcmp(mnem, "VDIVF32") == 0) {
+        if (*p == '.') { while (*p && *p != ' ' && *p != '\t') p++; }
+        int sd = parse_sreg(&p); expect_comma(&p);
+        int sn = parse_sreg(&p); expect_comma(&p);
+        int sm = parse_sreg(&p);
+        if (sd < 0 || sn < 0 || sm < 0) error("ASM: bad register for VDIV.F32");
+        asm_emit32(0xEE800A00 | VFP_SD(sd) | VFP_SN(sn) | VFP_SM(sm));
+        return;
+    }
+
+    // ---- VNEG.F32 Sd, Sm ----
+    if (strcmp(mnem, "VNEG") == 0 || strcmp(mnem, "VNEGF32") == 0) {
+        if (*p == '.') { while (*p && *p != ' ' && *p != '\t') p++; }
+        int sd = parse_sreg(&p); expect_comma(&p);
+        int sm = parse_sreg(&p);
+        if (sd < 0 || sm < 0) error("ASM: bad register for VNEG.F32");
+        asm_emit32(0xEEB10A40 | VFP_SD(sd) | VFP_SM(sm));
+        return;
+    }
+
+    // ---- VABS.F32 Sd, Sm ----
+    if (strcmp(mnem, "VABS") == 0 || strcmp(mnem, "VABSF32") == 0) {
+        if (*p == '.') { while (*p && *p != ' ' && *p != '\t') p++; }
+        int sd = parse_sreg(&p); expect_comma(&p);
+        int sm = parse_sreg(&p);
+        if (sd < 0 || sm < 0) error("ASM: bad register for VABS.F32");
+        asm_emit32(0xEEB00AC0 | VFP_SD(sd) | VFP_SM(sm));
+        return;
+    }
+
+    // ---- VSQRT.F32 Sd, Sm ----
+    if (strcmp(mnem, "VSQRT") == 0 || strcmp(mnem, "VSQRTF32") == 0) {
+        if (*p == '.') { while (*p && *p != ' ' && *p != '\t') p++; }
+        int sd = parse_sreg(&p); expect_comma(&p);
+        int sm = parse_sreg(&p);
+        if (sd < 0 || sm < 0) error("ASM: bad register for VSQRT.F32");
+        asm_emit32(0xEEB10AC0 | VFP_SD(sd) | VFP_SM(sm));
+        return;
+    }
+
+    // ---- VMOV Sd, Sm  or  VMOV Sd, Rn  or  VMOV Rd, Sn ----
+    if (strcmp(mnem, "VMOV") == 0) {
+        if (*p == '.') { while (*p && *p != ' ' && *p != '\t') p++; }
+        char *saved = p;
+        int sd = parse_sreg(&p);
+        if (sd >= 0) {
+            expect_comma(&p);
+            // VMOV Sd, Sm or VMOV Sd, Rn
+            char *saved2 = p;
+            int sm = parse_sreg(&p);
+            if (sm >= 0) {
+                // VMOV.F32 Sd, Sm (copy)
+                asm_emit32(0xEEB00A40 | VFP_SD(sd) | VFP_SM(sm));
+            } else {
+                p = saved2;
+                int rn = parse_reg(&p);
+                if (rn >= 0) {
+                    // VMOV Sd, Rn (ARM to VFP)
+                    asm_emit32(0xEE000A10 | (rn << 12) | VFP_SN(sd));
+                } else {
+                    error("ASM: bad operand for VMOV");
+                }
+            }
+        } else {
+            p = saved;
+            int rd = parse_reg(&p);
+            if (rd >= 0) {
+                expect_comma(&p);
+                int sn = parse_sreg(&p);
+                if (sn >= 0) {
+                    // VMOV Rd, Sn (VFP to ARM)
+                    asm_emit32(0xEE100A10 | (rd << 12) | VFP_SN(sn));
+                } else {
+                    error("ASM: bad operand for VMOV");
+                }
+            } else {
+                error("ASM: bad operand for VMOV");
+            }
+        }
+        return;
+    }
+
+    // ---- VCMP.F32 Sd, Sm ----
+    if (strcmp(mnem, "VCMP") == 0 || strcmp(mnem, "VCMPF32") == 0) {
+        if (*p == '.') { while (*p && *p != ' ' && *p != '\t') p++; }
+        int sd = parse_sreg(&p); expect_comma(&p);
+        // Check for #0 (compare against zero)
+        int imm;
+        if (parse_imm(&p, &imm) && imm == 0) {
+            asm_emit32(0xEEB50A40 | VFP_SD(sd));
+        } else {
+            int sm = parse_sreg(&p);
+            if (sm < 0) error("ASM: bad register for VCMP.F32");
+            asm_emit32(0xEEB40A40 | VFP_SD(sd) | VFP_SM(sm));
+        }
+        return;
+    }
+
+    // ---- VMRS APSR_nzcv, FPSCR (move FP flags to ARM condition flags) ----
+    if (strcmp(mnem, "VMRS") == 0) {
+        // VMRS APSR_nzcv, FPSCR
+        asm_emit32(0xEEF1FA10);
+        return;
+    }
+
+    // ---- VCVT: int<->float conversions ----
+    // VCVT.F32.S32 Sd, Sm  (signed int to float)
+    // VCVT.S32.F32 Sd, Sm  (float to signed int)
+    // VCVT.F32.U32 Sd, Sm  (unsigned int to float)
+    // VCVT.U32.F32 Sd, Sm  (float to unsigned int)
+    if (strcmp(mnem, "VCVT") == 0) {
+        if (*p == '.') p++;
+        // Parse conversion type
+        bool to_float = false, is_signed = true;
+        if (strncasecmp(p, "F32", 3) == 0) {
+            to_float = true;
+            p += 3;
+            if (*p == '.') p++;
+            if (strncasecmp(p, "S32", 3) == 0) { is_signed = true; p += 3; }
+            else if (strncasecmp(p, "U32", 3) == 0) { is_signed = false; p += 3; }
+            else error("ASM: VCVT expected .S32 or .U32");
+        } else if (strncasecmp(p, "S32", 3) == 0) {
+            to_float = false; is_signed = true; p += 3;
+            if (*p == '.') p++;
+            if (strncasecmp(p, "F32", 3) == 0) p += 3;
+            else error("ASM: VCVT expected .F32");
+        } else if (strncasecmp(p, "U32", 3) == 0) {
+            to_float = false; is_signed = false; p += 3;
+            if (*p == '.') p++;
+            if (strncasecmp(p, "F32", 3) == 0) p += 3;
+            else error("ASM: VCVT expected .F32");
+        } else error("ASM: bad VCVT type");
+
+        int sd = parse_sreg(&p); expect_comma(&p);
+        int sm = parse_sreg(&p);
+        if (sd < 0 || sm < 0) error("ASM: bad register for VCVT");
+
+        if (to_float) {
+            // int->float: VCVT.F32.S32 = EEB80AC0, VCVT.F32.U32 = EEB80A40
+            asm_emit32((is_signed ? 0xEEB80AC0 : 0xEEB80A40) | VFP_SD(sd) | VFP_SM(sm));
+        } else {
+            // float->int: VCVT.S32.F32 = EEBD0AC0, VCVT.U32.F32 = EEBC0AC0
+            asm_emit32((is_signed ? 0xEEBD0AC0 : 0xEEBC0AC0) | VFP_SD(sd) | VFP_SM(sm));
+        }
+        return;
+    }
+
+    // ---- VLDR Sd, [Rn, #offset]  (load float from memory) ----
+    if (strcmp(mnem, "VLDR") == 0) {
+        if (*p == '.') { while (*p && *p != ' ' && *p != '\t') p++; }
+        int sd = parse_sreg(&p); expect_comma(&p);
+        p = skip_ws(p);
+        if (*p != '[') error("ASM: expected '[' for VLDR");
+        p++;
+        int rn = parse_reg(&p);
+        if (rn < 0) error("ASM: bad base register for VLDR");
+        p = skip_ws(p);
+        int off = 0;
+        if (*p == ',') { p++; parse_imm(&p, &off); }
+        p = skip_ws(p);
+        if (*p != ']') error("ASM: expected ']'");
+        p++;
+        if ((off & 3) || off < -1020 || off > 1020) error("ASM: VLDR offset must be word-aligned, -1020..1020");
+        uint32_t U = (off >= 0) ? 1 : 0;
+        uint32_t imm8 = (off >= 0 ? off : -off) >> 2;
+        asm_emit32(0xED100A00 | (U << 23) | VFP_SD(sd) | (rn << 16) | (imm8 & 0xFF));
+        return;
+    }
+
+    // ---- VSTR Sd, [Rn, #offset]  (store float to memory) ----
+    if (strcmp(mnem, "VSTR") == 0) {
+        if (*p == '.') { while (*p && *p != ' ' && *p != '\t') p++; }
+        int sd = parse_sreg(&p); expect_comma(&p);
+        p = skip_ws(p);
+        if (*p != '[') error("ASM: expected '[' for VSTR");
+        p++;
+        int rn = parse_reg(&p);
+        if (rn < 0) error("ASM: bad base register for VSTR");
+        p = skip_ws(p);
+        int off = 0;
+        if (*p == ',') { p++; parse_imm(&p, &off); }
+        p = skip_ws(p);
+        if (*p != ']') error("ASM: expected ']'");
+        p++;
+        if ((off & 3) || off < -1020 || off > 1020) error("ASM: VSTR offset must be word-aligned, -1020..1020");
+        uint32_t U = (off >= 0) ? 1 : 0;
+        uint32_t imm8 = (off >= 0 ? off : -off) >> 2;
+        asm_emit32(0xED000A00 | (U << 23) | VFP_SD(sd) | (rn << 16) | (imm8 & 0xFF));
+        return;
+    }
+
+    // ---- VPUSH/VPOP {Sd-Sn} ----
+    if (strcmp(mnem, "VPUSH") == 0) {
+        p = skip_ws(p);
+        if (*p != '{') error("ASM: expected '{' for VPUSH");
+        p++;
+        int s1 = parse_sreg(&p);
+        p = skip_ws(p);
+        int count = 1;
+        if (*p == '-') { p++; int s2 = parse_sreg(&p); count = s2 - s1 + 1; }
+        p = skip_ws(p);
+        if (*p != '}') error("ASM: expected '}'"); p++;
+        if (s1 < 0 || count < 1 || count > 16) error("ASM: bad VPUSH register range");
+        asm_emit32(0xED2D0A00 | VFP_SD(s1) | count);
+        return;
+    }
+    if (strcmp(mnem, "VPOP") == 0) {
+        p = skip_ws(p);
+        if (*p != '{') error("ASM: expected '{' for VPOP");
+        p++;
+        int s1 = parse_sreg(&p);
+        p = skip_ws(p);
+        int count = 1;
+        if (*p == '-') { p++; int s2 = parse_sreg(&p); count = s2 - s1 + 1; }
+        p = skip_ws(p);
+        if (*p != '}') error("ASM: expected '}'"); p++;
+        if (s1 < 0 || count < 1 || count > 16) error("ASM: bad VPOP register range");
+        asm_emit32(0xECBD0A00 | VFP_SD(s1) | count);
+        return;
+    }
+
+    // ---- VMLA.F32 Sd, Sn, Sm  (multiply-accumulate: Sd = Sd + Sn*Sm) ----
+    if (strcmp(mnem, "VMLA") == 0 || strcmp(mnem, "VMLAF32") == 0) {
+        if (*p == '.') { while (*p && *p != ' ' && *p != '\t') p++; }
+        int sd = parse_sreg(&p); expect_comma(&p);
+        int sn = parse_sreg(&p); expect_comma(&p);
+        int sm = parse_sreg(&p);
+        if (sd < 0 || sn < 0 || sm < 0) error("ASM: bad register for VMLA.F32");
+        asm_emit32(0xEE000A00 | VFP_SD(sd) | VFP_SN(sn) | VFP_SM(sm));
+        return;
+    }
+
+    // ---- VMLS.F32 Sd, Sn, Sm  (multiply-subtract: Sd = Sd - Sn*Sm) ----
+    if (strcmp(mnem, "VMLS") == 0 || strcmp(mnem, "VMLSF32") == 0) {
+        if (*p == '.') { while (*p && *p != ' ' && *p != '\t') p++; }
+        int sd = parse_sreg(&p); expect_comma(&p);
+        int sn = parse_sreg(&p); expect_comma(&p);
+        int sm = parse_sreg(&p);
+        if (sd < 0 || sn < 0 || sm < 0) error("ASM: bad register for VMLS.F32");
+        asm_emit32(0xEE000A40 | VFP_SD(sd) | VFP_SN(sn) | VFP_SM(sm));
+        return;
+    }
+
+    // ---- VNMUL.F32 Sd, Sn, Sm  (negate-multiply: Sd = -(Sn*Sm)) ----
+    if (strcmp(mnem, "VNMUL") == 0) {
+        if (*p == '.') { while (*p && *p != ' ' && *p != '\t') p++; }
+        int sd = parse_sreg(&p); expect_comma(&p);
+        int sn = parse_sreg(&p); expect_comma(&p);
+        int sm = parse_sreg(&p);
+        if (sd < 0 || sn < 0 || sm < 0) error("ASM: bad register for VNMUL.F32");
+        asm_emit32(0xEE200A40 | VFP_SD(sd) | VFP_SN(sn) | VFP_SM(sm));
         return;
     }
 
