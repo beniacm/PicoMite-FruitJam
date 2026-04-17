@@ -724,17 +724,10 @@ static void asm_line(char *line) {
         if (target >= 0 && asm_pass == 1) {
             int offset = target - (asm_pos + 4); // PC is current + 4
             if (cond >= 0) {
-                // Always wide Bcc (32-bit) for consistent sizing
+                // Bcc narrow: 8-bit signed offset in halfwords
                 offset >>= 1;
-                int32_t off = offset;
-                uint32_t S = (off < 0) ? 1 : 0;
-                uint32_t imm11 = off & 0x7FF;
-                uint32_t imm6 = (off >> 11) & 0x3F;
-                uint32_t J1 = (off >> 17) & 1;
-                uint32_t J2 = (off >> 18) & 1;
-                uint32_t hw1 = 0xF000 | (S << 10) | (cond << 6) | imm6;
-                uint32_t hw2 = 0x8000 | (J1 << 13) | (J2 << 11) | imm11;
-                asm_emit32((hw1 << 16) | hw2);
+                if (offset < -128 || offset > 127) error("ASM: conditional branch too far (keep code short or use B)");
+                asm_emit16(0xD000 | (cond << 8) | (offset & 0xFF));
             } else {
                 // B: 11-bit signed offset (in halfwords)
                 offset >>= 1;
@@ -742,16 +735,12 @@ static void asm_line(char *line) {
                 asm_emit16(0xE000 | (offset & 0x7FF));
             }
         } else {
-            // First pass or unresolved - always emit wide (32-bit) for Bcc
-            // to ensure consistent code size between passes
-            if (cond >= 0) {
-                asm_emit32(0xF0008000 | (cond << 22)); // Bcc.W placeholder
-            } else {
-                asm_emit16(0xE000); // B placeholder (11-bit is usually enough)
-            }
-            // Record fixup
+            if (cond >= 0)
+                asm_emit16(0xD000 | (cond << 8)); // Bcc placeholder (narrow)
+            else
+                asm_emit16(0xE000); // B placeholder
             if (asm_nfixups < ASM_MAX_FIXUPS) {
-                asm_fixups[asm_nfixups].offset = asm_pos - (cond >= 0 ? 4 : 2);
+                asm_fixups[asm_nfixups].offset = asm_pos - 2;
                 strncpy(asm_fixups[asm_nfixups].label, label, 31);
                 asm_fixups[asm_nfixups].type = (cond >= 0) ? 1 : 0;
                 asm_fixups[asm_nfixups].cond = (cond >= 0) ? cond : 0;
@@ -1187,29 +1176,12 @@ static void asm_resolve_fixups(void) {
             asm_code[off] = instr & 0xFF;
             asm_code[off+1] = (instr >> 8) & 0xFF;
         } else if (asm_fixups[i].type == 1) {
+            // Bcc: 8-bit signed offset in halfwords
             delta >>= 1;
-            // Check if narrow (16-bit) or wide (32-bit) was emitted
-            uint16_t existing = asm_code[off] | (asm_code[off+1] << 8);
-            if ((existing & 0xF000) == 0xD000) {
-                // Narrow Bcc
-                if (delta < -128 || delta > 127) error("ASM: conditional branch offset too large");
-                uint16_t instr = 0xD000 | (asm_fixups[i].cond << 8) | (delta & 0xFF);
-                asm_code[off] = instr & 0xFF;
-                asm_code[off+1] = (instr >> 8) & 0xFF;
-            } else {
-                // Wide Bcc (32-bit)
-                uint32_t S = (delta < 0) ? 1 : 0;
-                uint32_t imm11 = delta & 0x7FF;
-                uint32_t imm6 = (delta >> 11) & 0x3F;
-                uint32_t J1 = (delta >> 17) & 1;
-                uint32_t J2 = (delta >> 18) & 1;
-                uint32_t hw1 = 0xF000 | (S << 10) | (asm_fixups[i].cond << 6) | imm6;
-                uint32_t hw2 = 0x8000 | (J1 << 13) | (J2 << 11) | imm11;
-                asm_code[off] = hw1 & 0xFF;
-                asm_code[off+1] = (hw1 >> 8) & 0xFF;
-                asm_code[off+2] = hw2 & 0xFF;
-                asm_code[off+3] = (hw2 >> 8) & 0xFF;
-            }
+            if (delta < -128 || delta > 127) error("ASM: conditional branch offset too large");
+            uint16_t instr = 0xD000 | (asm_fixups[i].cond << 8) | (delta & 0xFF);
+            asm_code[off] = instr & 0xFF;
+            asm_code[off+1] = (instr >> 8) & 0xFF;
         } else if (asm_fixups[i].type == 2) {
             // BL: 32-bit Thumb encoding
             delta >>= 1;
