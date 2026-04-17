@@ -1284,38 +1284,52 @@ void cmd_asm(void) {
     MMPrintString(msg);
 }
 
-// Evaluate an expression and return as uint32_t suitable for ARM register:
-// - Integer expressions → passed as-is (int32)
-// - Float expressions → converted to IEEE754 single-precision bits
-// This lets BASIC floats arrive as proper floats in ASM (VMOV S0, R0)
-static uint32_t eval_asm_arg(unsigned char *expr) {
-    // Use MMBasic's expression evaluator with type detection
-    MMFLOAT f = 0;
-    long long int i64 = 0;
-    unsigned char *s = NULL;
-    int t = T_NOTYPE;
-    unsigned char *p = expr;
-    // Evaluate expression (sets targ)
-    f = getnumber(p);
-    // Check if the value is an integer (no fractional part and in int32 range)
-    if (f == (double)(int32_t)f && f >= -2147483648.0 && f <= 2147483647.0) {
-        // Could be integer - check if the expression uses integer variables
-        // Simple heuristic: if value has no fractional part, treat as integer
-        return (uint32_t)(int32_t)f;
+// Evaluate a BASIC expression and determine its type
+// Returns: 0 = integer, 1 = float
+static int eval_asm_arg_typed(unsigned char *expr, uint32_t *ival, float *fval) {
+    // Check if expression looks like an integer: variable with %, literal without .
+    // Use getnumber to evaluate, then check if it has a fractional part
+    MMFLOAT f = getnumber(expr);
+
+    // Heuristic: integer if no fractional part AND the expression contains %
+    // or is a plain integer literal
+    bool looks_integer = false;
+    char *s = (char *)expr;
+    while (*s == ' ') s++;
+
+    // Check for integer variable (has %) or integer literal (digits only, no .)
+    if (strchr(s, '%')) {
+        looks_integer = true;
+    } else {
+        // Check if it's a plain number without decimal point
+        char *p = s;
+        if (*p == '-') p++;
+        if (*p == '&') looks_integer = true; // hex literal
+        else if (isdigit(*p)) {
+            bool has_dot = false;
+            while (*p && (isdigit(*p) || *p == '.')) {
+                if (*p == '.') has_dot = true;
+                p++;
+            }
+            if (!has_dot && (*p == 0 || *p == ')' || *p == ',' || *p == ' '))
+                looks_integer = true;
+        }
     }
-    // Float: convert double to IEEE754 single-precision bits
-    float f32 = (float)f;
-    uint32_t bits;
-    memcpy(&bits, &f32, sizeof(bits));
-    return bits;
+
+    if (looks_integer) {
+        *ival = (uint32_t)(int32_t)f;
+        *fval = 0;
+        return 0; // integer
+    } else {
+        *fval = (float)f;
+        *ival = 0;
+        return 1; // float
+    }
 }
 
-// Helper: resolve ASM code address and up to 4 args (R0-R3 per ARM ABI)
-static void resolve_asm_call(unsigned char **argv, int argc,
-                              uint32_t *addr, uint32_t args[4], int *nargs) {
-    args[0] = args[1] = args[2] = args[3] = 0;
-    *nargs = 0;
-    char *s = (char *)argv[0];
+// Resolve ASM code address from first argument
+static uint32_t resolve_asm_addr(unsigned char *arg) {
+    char *s = (char *)arg;
     bool is_array = false;
     int depth = 0;
     for (char *c = s; *c; c++) {
@@ -1324,37 +1338,61 @@ static void resolve_asm_call(unsigned char **argv, int argc,
     }
     if (is_array) {
         int64_t *arrptr = NULL;
-        parseintegerarray(argv[0], &arrptr, 1, 1, NULL, false, NULL);
-        *addr = (uint32_t)(uintptr_t)arrptr | 1;
-    } else {
-        *addr = (uint32_t)getinteger(argv[0]) | 1;
+        parseintegerarray(arg, &arrptr, 1, 1, NULL, false, NULL);
+        return (uint32_t)(uintptr_t)arrptr | 1;
     }
-    for (int i = 1; i < 5 && (i * 2) < argc; i++) {
-        args[i - 1] = eval_asm_arg(argv[i * 2]);
-        *nargs = i;
-    }
+    return (uint32_t)getinteger(arg) | 1;
 }
 
-// CALL code%() [, arg1 [, arg2 [, arg3 [, arg4]]]]
+// Call ASM with auto type routing:
+// - Integer args go to R0, R1, R2, R3 (in order)
+// - Float args are collected into a float[] block, pointer passed as next R arg
+// - ASM receives: integers in R registers, float block pointer in next R
+// Example: CALL code%(), fb%, cx, xr, cy, yr
+//   → R0=fb%, R1=pointer to {cx, xr, cy, yr} as float32 array
+//   ASM does: VLDR S0, [R1] / VLDR S1, [R1, #4] / etc.
+static uint32_t do_asm_call(unsigned char **argv, int argc) {
+    uint32_t addr = resolve_asm_addr(argv[0]);
+
+    uint32_t r[4] = {0, 0, 0, 0};
+    static float fbuf[8]; // float buffer (static to survive the call)
+    int ri = 0, fi = 0;
+    bool has_floats = false;
+
+    // First pass: separate ints and floats
+    for (int i = 1; i < 9 && (i * 2) < argc; i++) {
+        uint32_t ival;
+        float fval;
+        int is_float = eval_asm_arg_typed(argv[i * 2], &ival, &fval);
+        if (is_float) {
+            if (fi < 8) fbuf[fi++] = fval;
+            has_floats = true;
+        } else {
+            if (ri < 4) r[ri++] = ival;
+        }
+    }
+
+    // If there are floats, pass float buffer pointer as the next R arg
+    if (has_floats && ri < 4) {
+        r[ri++] = (uint32_t)(uintptr_t)fbuf;
+    }
+
+    typedef uint32_t (*asm_func4_t)(uint32_t, uint32_t, uint32_t, uint32_t);
+    return ((asm_func4_t)addr)(r[0], r[1], r[2], r[3]);
+}
+
+// CALL code%(), args...  - call ASM, discard return
 void cmd_callasm(void) {
-    getargs(&cmdline, 9, (unsigned char *)",");
+    getargs(&cmdline, 17, (unsigned char *)","); // up to 8 args
     if (argc < 1) error("Syntax");
-    uint32_t addr, args[4];
-    int nargs;
-    resolve_asm_call(argv, argc, &addr, args, &nargs);
-    typedef uint32_t (*asm_func4_t)(uint32_t, uint32_t, uint32_t, uint32_t);
-    ((asm_func4_t)addr)(args[0], args[1], args[2], args[3]);
+    do_asm_call(argv, argc);
 }
 
-// USR(code%() [, arg1 [, arg2 [, arg3 [, arg4]]]])
+// USR(code%(), args...) - call ASM, return R0 as integer
 void fun_usr(void) {
-    getargs(&ep, 9, (unsigned char *)",");
+    getargs(&ep, 17, (unsigned char *)",");
     if (argc < 1) error("Syntax");
-    uint32_t addr, args[4];
-    int nargs;
-    resolve_asm_call(argv, argc, &addr, args, &nargs);
-    typedef uint32_t (*asm_func4_t)(uint32_t, uint32_t, uint32_t, uint32_t);
-    iret = (int64_t)(int32_t)((asm_func4_t)addr)(args[0], args[1], args[2], args[3]);
+    iret = (int64_t)(int32_t)do_asm_call(argv, argc);
     targ = T_INT;
 }
 
