@@ -629,12 +629,21 @@ static void asm_line(char *line) {
         p++;
         int rb = parse_reg(&p);
         p = skip_ws(p);
-        int off = 0;
-        if (*p == ',') { p++; parse_imm(&p, &off); }
-        p = skip_ws(p);
-        if (*p != ']') error("ASM: expected ']'");
-        p++;
-        asm_emit16(0x7800 | ((off & 0x1F) << 6) | (rb << 3) | rd);
+        if (*p == ']') {
+            p++;
+            asm_emit16(0x7800 | (rb << 3) | rd);
+        } else if (*p == ',') {
+            p++;
+            int imm;
+            if (parse_imm(&p, &imm)) {
+                p = skip_ws(p); if (*p != ']') error("ASM: expected ']'"); p++;
+                asm_emit16(0x7800 | ((imm & 0x1F) << 6) | (rb << 3) | rd);
+            } else {
+                int ro = parse_reg(&p);
+                p = skip_ws(p); if (*p != ']') error("ASM: expected ']'"); p++;
+                asm_emit16(0x5C00 | (ro << 6) | (rb << 3) | rd);
+            }
+        }
         return;
     }
     if (strcmp(mnem, "LDRH") == 0) {
@@ -678,11 +687,21 @@ static void asm_line(char *line) {
         if (*p != '[') error("ASM: expected '['"); p++;
         int rb = parse_reg(&p);
         p = skip_ws(p);
-        int off = 0;
-        if (*p == ',') { p++; parse_imm(&p, &off); }
-        p = skip_ws(p);
-        if (*p != ']') error("ASM: expected ']'"); p++;
-        asm_emit16(0x7000 | ((off & 0x1F) << 6) | (rb << 3) | rd);
+        if (*p == ']') {
+            p++;
+            asm_emit16(0x7000 | (rb << 3) | rd);
+        } else if (*p == ',') {
+            p++;
+            int imm;
+            if (parse_imm(&p, &imm)) {
+                p = skip_ws(p); if (*p != ']') error("ASM: expected ']'"); p++;
+                asm_emit16(0x7000 | ((imm & 0x1F) << 6) | (rb << 3) | rd);
+            } else {
+                int ro = parse_reg(&p);
+                p = skip_ws(p); if (*p != ']') error("ASM: expected ']'"); p++;
+                asm_emit16(0x5400 | (ro << 6) | (rb << 3) | rd);
+            }
+        }
         return;
     }
     if (strcmp(mnem, "STRH") == 0) {

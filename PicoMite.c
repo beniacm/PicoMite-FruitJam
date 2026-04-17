@@ -3521,7 +3521,7 @@ int __not_in_flash_func(MMInkey)(void)
             0xFFDB00, 0xFFDB55, 0xFFDBAA, 0xFFDBFF, 0xFFFF00, 0xFFFF55, 0xFFFFAA, 0xFFFFFF};
     const uint32_t MAP16DEF[16] = {0x00, 0xFF, 0x5500, 0x55ff, 0xAA00, 0xAAff, 0xff00, 0xffff, 0xff0000, 0xff00FF, 0xff5500, 0xff55ff, 0xffAA00, 0xffAAff, 0xffff00, 0xffffff};
     const uint32_t MAP4DEF[4] = {0, 0xFF, 0xFF00, 0xFF0000};
-    uint16_t map256[256];
+    static uint16_t map256_local[256];
     static uint32_t vblank_line_vsync_off[7];
     static uint32_t vblank_line_vsync_on[7];
     static uint32_t vactive_line[9];
@@ -4596,6 +4596,7 @@ int __not_in_flash_func(MMInkey)(void)
     }
     void HDMICore(void)
     {
+        map256 = map256_local;  // export local array pointer for MAP command on core0
         mapreset();
         if (Option.CPU_Speed == FreqXGA)
         {

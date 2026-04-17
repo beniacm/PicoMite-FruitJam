@@ -474,7 +474,7 @@ extern uint16_t __attribute__((aligned(256))) tilebcols[80 * 40];
 extern uint32_t remap555[];
 extern uint32_t remap332[];
 extern uint16_t remap256[];
-extern uint16_t map256[256];
+extern uint16_t *map256;  // pointer to core1's local array
 extern uint32_t map16quads[16];
 extern uint32_t map16pairs[16];
 extern const uint32_t MAP256DEF[256];

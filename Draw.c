@@ -349,6 +349,7 @@ uint32_t remap[256];
 uint32_t remap555[256];
 uint32_t remap332[256];
 uint16_t remap256[256];
+uint16_t *map256 = NULL;  // pointer to core1's local map256 array
 #endif
 
 short gui_font_width, gui_font_height;
